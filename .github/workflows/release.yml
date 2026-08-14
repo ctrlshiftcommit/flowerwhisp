@@ -38,7 +38,7 @@ jobs:
           $packages = @(Get-ChildItem artifacts -Recurse -File | Where-Object { $_.Extension -in '.msix', '.appx', '.msixbundle', '.appxbundle' })
           if (-not $packages) { throw 'Unsigned PR MSIX build produced no MSIX/AppX package.' }
           $packages | ForEach-Object { Write-Host "Unsigned package: $($_.FullName)" }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: flowerwhisp-pr-unsigned-msix
           path: artifacts
@@ -90,7 +90,7 @@ jobs:
       - name: Generate checksums
         shell: pwsh
         run: Get-ChildItem artifacts\release -File | Get-FileHash -Algorithm SHA256 | ConvertTo-Csv -NoTypeInformation | Set-Content artifacts\SHA256SUMS.csv
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: flowerwhisp-${{ inputs.tag }}-win-x64
           path: artifacts\release
