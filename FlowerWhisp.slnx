@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FlowerWhisp.Application/FlowerWhisp.Application.csproj" />
+    <Project Path="src/FlowerWhisp.Core/FlowerWhisp.Core.csproj" />
+    <Project Path="src/FlowerWhisp.Infrastructure/FlowerWhisp.Infrastructure.csproj" />
+    <Project Path="src/FlowerWhisp.Platform.Windows/FlowerWhisp.Platform.Windows.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FlowerWhisp.Tests/FlowerWhisp.Tests.csproj" />
+  </Folder>
+  <Project Path="FlowerWhisp.csproj" />
+</Solution>

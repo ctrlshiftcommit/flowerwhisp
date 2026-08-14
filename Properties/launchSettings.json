@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "FlowerWhisp (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "FlowerWhisp (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

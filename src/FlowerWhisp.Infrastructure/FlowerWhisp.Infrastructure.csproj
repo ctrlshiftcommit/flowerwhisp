@@ -1,0 +1,15 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="..\FlowerWhisp.Core\FlowerWhisp.Core.csproj" /></ItemGroup>
+  <ItemGroup>
+    <!-- Use the Windows system winsqlite3 provider rather than the bundled
+         e_sqlite3 native binary (see the SQLitePCLRaw advisory). -->
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="10.0.10" />
+    <PackageReference Include="SQLitePCLRaw.bundle_winsqlite3" Version="2.1.11" />
+  </ItemGroup>
+</Project>
