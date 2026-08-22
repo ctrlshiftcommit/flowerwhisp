@@ -13,10 +13,11 @@ await rm(evidenceDir, { recursive: true, force: true })
 await mkdir(evidenceDir, { recursive: true })
 
 const electronPath = require('electron')
-// Some managed Windows hosts expose a broken Chromium GPU runtime. Keep the
-// app's normal launch path untouched, but make the smoke harness deterministic
-// by exercising the same renderer through Chromium's software path.
-const child = spawn(electronPath, ['--disable-gpu', '.'], {
+// Some managed Windows hosts expose a broken Chromium GPU runtime and reject
+// the renderer sandbox before a window can load. Keep the app's normal launch
+// path untouched, but make the smoke harness deterministic with the same
+// software-rendered UI plus a host-only no-sandbox switch.
+const child = spawn(electronPath, ['--disable-gpu', '--in-process-gpu', '--no-sandbox', '.'], {
   cwd: root,
   env: { ...process.env, FLOWERWHISP_SMOKE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],

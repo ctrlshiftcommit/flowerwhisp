@@ -1,12 +1,16 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
+import ffmpegStaticPath from 'ffmpeg-static'
 
 import {
   app,
   BrowserWindow,
   clipboard,
+  dialog,
   globalShortcut,
   ipcMain,
   Menu,
@@ -14,6 +18,7 @@ import {
   nativeTheme,
   screen,
   session,
+  shell,
   Tray,
 } from 'electron'
 
@@ -32,6 +37,9 @@ import { DictationPipeline } from './services/pipeline'
 import { captureInsertionTarget, copyForManualPaste, insertAtTarget, type InsertionTarget } from './services/insertion'
 import { SecretStore } from './services/secrets'
 import { JsonStateStore, type AppSnapshot } from './services/store'
+import { countWords } from './domain'
+
+const execFileAsync = promisify(execFile)
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const rendererPath = path.join(__dirname, '../renderer/index.html')
@@ -64,6 +72,7 @@ let shortcutRegistered = false
 let shortcutRecording = false
 let allowQuit = false
 let pillEnabled = true
+let recordingsDirectory = ''
 
 type ActiveSession = {
   id: string
@@ -96,6 +105,29 @@ let elapsedTicker: NodeJS.Timeout | null = null
 
 const makeTrayImage = () => {
   return nativeImage.createFromPath(appIconPath).resize({ width: 16, height: 16 })
+}
+
+const audioExtension = (mimeType: string): string => mimeType.includes('ogg') ? 'ogg' : 'webm'
+
+const audioPathFor = (fileName: string): string => path.join(recordingsDirectory, path.basename(fileName))
+
+const persistRecording = async (recordId: string, bytes: Uint8Array, mimeType: string, retention: PublicSettings['retention']): Promise<void> => {
+  if (retention === 'never') return
+  const fileName = `${recordId}.${audioExtension(mimeType)}`
+  await mkdir(recordingsDirectory, { recursive: true })
+  await writeFile(audioPathFor(fileName), bytes)
+  await store.update((snapshot) => {
+    const record = snapshot.records.find((candidate) => candidate.id === recordId)
+    if (!record) return
+    record.audioAvailable = true
+    record.audioFileName = fileName
+    record.audioMimeType = mimeType
+  })
+}
+
+const ffmpegExecutable = (): string => {
+  if (app.isPackaged) return path.join(path.dirname(app.getAppPath()), 'app.asar.unpacked', 'node_modules', 'ffmpeg-static', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')
+  return ffmpegStaticPath || 'ffmpeg'
 }
 
 const isTrustedSender = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent): boolean => {
@@ -253,11 +285,20 @@ const createWindows = (): void => {
 
 const getSnapshot = async (): Promise<AppSnapshot> => store.load()
 
+const retainedAudioPath = async (id: string): Promise<{ record: DictationRecord; filePath: string } | null> => {
+  const snapshot = await getSnapshot()
+  const record = snapshot.records.find((candidate) => candidate.id === id)
+  if (!record?.audioAvailable || !record.audioFileName) return null
+  return { record, filePath: audioPathFor(record.audioFileName) }
+}
+
 const buildBootstrap = async (): Promise<BootstrapPayload> => {
   const snapshot = await getSnapshot()
   return {
     settings: snapshot.settings,
-    records: snapshot.records,
+    // Keep playback filenames inside the main process. The renderer only
+    // needs the availability flag and asks the preload bridge for audio data.
+    records: snapshot.records.map(({ audioFileName: _audioFileName, audioMimeType: _audioMimeType, ...record }) => record),
     dictionary: snapshot.dictionary,
     snippets: snapshot.snippets,
     styles: snapshot.styles,
@@ -411,6 +452,12 @@ const handleAudio = async (payload: { sessionId: string; dataUrl: string; mimeTy
     const settings = (await getSnapshot()).settings
     advance('processing', { message: settings.cleanupLevel === 'none' ? 'Applying dictionary corrections…' : 'Applying the selected cleanup…' })
     const processed = await pipeline.run({ audio: { bytes, mimeType: payload.mimeType, durationMs: payload.durationMs }, settings })
+    try {
+      await persistRecording(processed.record.id, bytes, payload.mimeType, settings.retention)
+    } catch (error) {
+      // Playback is an enhancement; a disk failure must not discard a valid transcript.
+      console.warn('FlowerWhisp could not retain the source recording for playback', error)
+    }
     const startedAt = activeSession.startedAt
     advance('inserting', { message: 'Inserting transcript into the active application…' })
     // Resolve the destination only when the transcript is ready. The user may
@@ -497,6 +544,17 @@ const sendToScratchpad = async (text: string): Promise<CommandResult> => {
 
 const validateText = (value: unknown, max = 50_000): value is string => typeof value === 'string' && value.length <= max
 
+const applySystemSettings = (settings: PublicSettings): void => {
+  mainWindow?.setSkipTaskbar(!settings.showInDock)
+  if (process.platform !== 'win32') return
+  const loginArgs = app.isPackaged ? [app.getAppPath()] : [path.resolve(process.argv[1] ?? app.getAppPath())]
+  app.setLoginItemSettings({
+    openAtLogin: settings.launchAtLogin,
+    path: process.execPath,
+    args: loginArgs,
+  })
+}
+
 const saveSettings = async (patch: Partial<PublicSettings>): Promise<CommandResult> => {
   if (patch.toggleShortcut !== undefined && !isValidShortcut(patch.toggleShortcut)) return result(false, undefined, 'Toggle shortcut needs a modifier and one key, for example Control+Shift+Tab.')
   if (patch.holdShortcut !== undefined && !isValidShortcut(patch.holdShortcut)) return result(false, undefined, 'Hold shortcut needs a modifier and one key, for example Control+Shift+Space.')
@@ -517,7 +575,7 @@ const saveSettings = async (patch: Partial<PublicSettings>): Promise<CommandResu
       return result(false, undefined, 'That shortcut is unavailable or already claimed by another app. Choose a different combination.')
     }
   }
-  await store.update((snapshot) => {
+  const updated = await store.update((snapshot) => {
     snapshot.settings = { ...snapshot.settings, ...patch }
   })
   if (patch.theme !== undefined) {
@@ -529,6 +587,7 @@ const saveSettings = async (patch: Partial<PublicSettings>): Promise<CommandResu
     if (pillEnabled) showOverlay()
     else overlayWindow?.hide()
   }
+  if (patch.launchAtLogin !== undefined || patch.showInDock !== undefined) applySystemSettings(updated.settings)
   notifyBootstrapChanged()
   return result(true, 'Settings saved.')
 }
@@ -679,24 +738,88 @@ const registerIpc = (): void => {
   })
   ipcMain.handle('history:delete', async (event, id: unknown) => {
     if (!isTrustedSender(event) || typeof id !== 'string') return result(false, undefined, 'Invalid history entry.')
+    const snapshot = await getSnapshot()
+    const record = snapshot.records.find((candidate) => candidate.id === id)
     await store.update((snapshot) => (snapshot.records = snapshot.records.filter((record) => record.id !== id)))
+    if (record?.audioFileName) {
+      await unlink(audioPathFor(record.audioFileName)).catch(() => undefined)
+    }
     notifyBootstrapChanged()
     return result(true, 'Dictation deleted.')
-  })
-  ipcMain.handle('history:favorite', async (event, id: unknown) => {
-    if (!isTrustedSender(event) || typeof id !== 'string') return result(false, undefined, 'Invalid history entry.')
-    await store.update((snapshot) => {
-      const record = snapshot.records.find((candidate) => candidate.id === id)
-      if (record) record.favorite = !record.favorite
-    })
-    notifyBootstrapChanged()
-    return result(true)
   })
   ipcMain.handle('history:copy', async (event, id: unknown) => {
     if (!isTrustedSender(event) || typeof id !== 'string') return result(false, undefined, 'Invalid history entry.')
     const snapshot = await getSnapshot()
     const record = snapshot.records.find((candidate) => candidate.id === id)
     return record ? copyResult(record.finalText) : result(false, undefined, 'Dictation not found.')
+  })
+  ipcMain.handle('history:audio', async (event, id: unknown) => {
+    if (!isTrustedSender(event) || typeof id !== 'string') return result(false, undefined, 'Invalid history entry.')
+    const retained = await retainedAudioPath(id)
+    if (!retained) return result(false, undefined, 'No recording was retained for this transcript.')
+    try {
+      const bytes = await readFile(retained.filePath)
+      const mimeType = retained.record.audioMimeType || (retained.record.audioFileName?.endsWith('.ogg') ? 'audio/ogg' : 'audio/webm')
+      return { ok: true, mimeType, dataUrl: `data:${mimeType};base64,${bytes.toString('base64')}` }
+    } catch {
+      return result(false, undefined, 'The retained recording is no longer available.')
+    }
+  })
+  ipcMain.handle('history:play', async (event, id: unknown) => {
+    if (!isTrustedSender(event) || typeof id !== 'string') return result(false, undefined, 'Invalid history entry.')
+    const retained = await retainedAudioPath(id)
+    if (!retained) return result(false, undefined, 'No recording was retained for this transcript.')
+    const openError = await shell.openPath(retained.filePath)
+    return openError ? result(false, undefined, openError) : result(true, 'Playing recording.')
+  })
+  ipcMain.handle('history:undo', async (event, id: unknown) => {
+    if (!isTrustedSender(event) || typeof id !== 'string') return result(false, undefined, 'Invalid history entry.')
+    const snapshot = await getSnapshot()
+    const record = snapshot.records.find((candidate) => candidate.id === id)
+    if (!record) return result(false, undefined, 'Dictation not found.')
+    const restoredText = record.cleanedText || record.rawText || record.finalText
+    if (!restoredText) return result(false, undefined, 'The retained transcript text is unavailable.')
+    await store.update((current) => {
+      const currentRecord = current.records.find((candidate) => candidate.id === id)
+      if (!currentRecord) return
+      currentRecord.finalText = restoredText
+      currentRecord.wordCount = countWords(restoredText)
+      currentRecord.aiFixCount = 0
+    })
+    notifyBootstrapChanged()
+    return result(true, record.finalText === restoredText ? 'This transcript is already using the retained text.' : 'AI edits were undone.')
+  })
+  ipcMain.handle('history:retry', async (event, id: unknown) => {
+    if (!isTrustedSender(event) || typeof id !== 'string') return result(false, undefined, 'Invalid history entry.')
+    const retained = await retainedAudioPath(id)
+    if (!retained) return result(false, undefined, 'Retry is unavailable because this transcript has no retained recording.')
+    try {
+      const settings = (await getSnapshot()).settings
+      const bytes = await readFile(retained.filePath)
+      const processed = await pipeline.run({ audio: { bytes, mimeType: retained.record.audioMimeType || 'audio/webm', durationMs: retained.record.durationMs }, settings })
+      await persistRecording(processed.record.id, bytes, retained.record.audioMimeType || 'audio/webm', settings.retention)
+      notifyBootstrapChanged()
+      return result(true, 'Retried the recording and added a new transcript.')
+    } catch (error) {
+      return result(false, undefined, error instanceof Error ? error.message : 'The transcript could not be retried.')
+    }
+  })
+  ipcMain.handle('history:extract', async (event, id: unknown) => {
+    if (!isTrustedSender(event) || typeof id !== 'string') return result(false, undefined, 'Invalid history entry.')
+    const retained = await retainedAudioPath(id)
+    if (!retained) return result(false, undefined, 'No recording was retained for this transcript.')
+    const saveDialog = await dialog.showSaveDialog({
+      title: 'Extract audio as FLAC',
+      defaultPath: path.join(app.getPath('downloads'), `${retained.record.id}.flac`),
+      filters: [{ name: 'FLAC audio', extensions: ['flac'] }],
+    })
+    if (saveDialog.canceled || !saveDialog.filePath) return result(false, undefined, 'Audio extraction canceled.')
+    try {
+      await execFileAsync(ffmpegExecutable(), ['-hide_banner', '-loglevel', 'error', '-y', '-i', retained.filePath, '-vn', '-c:a', 'flac', saveDialog.filePath])
+      return result(true, `Extracted FLAC audio to ${path.basename(saveDialog.filePath)}.`)
+    } catch (error) {
+      return result(false, undefined, error instanceof Error ? error.message : 'The recording could not be converted to FLAC.')
+    }
   })
   ipcMain.handle('dictionary:save', (event, entry) => (isTrustedSender(event) ? saveDictionary(entry as Omit<DictionaryEntry, 'id' | 'createdAt'> & { id?: string }) : result(false, undefined, 'Unauthorized request.')))
   ipcMain.handle('dictionary:delete', async (event, id: unknown) => {
@@ -759,6 +882,7 @@ const setupPermissions = (): void => {
 
 const initialize = async (): Promise<void> => {
   const root = path.join(app.getPath('userData'), 'state')
+  recordingsDirectory = path.join(app.getPath('userData'), 'recordings')
   store = new JsonStateStore(path.join(root, 'flowerwhisp.json'))
   secrets = new SecretStore(path.join(app.getPath('userData'), 'secrets'))
   await store.load()
@@ -766,6 +890,7 @@ const initialize = async (): Promise<void> => {
   pipeline = new DictationPipeline(store, secrets)
   nativeTheme.themeSource = (await getSnapshot()).settings.theme
   createWindows()
+  applySystemSettings((await getSnapshot()).settings)
   registerIpc()
   createTray()
   setupPermissions()

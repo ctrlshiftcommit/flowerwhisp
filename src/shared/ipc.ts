@@ -69,7 +69,11 @@ export interface DictationRecord {
   aiFixCount: number
   insertionOutcome: 'inserted' | 'copied' | 'scratchpad' | 'not-attempted' | 'failed'
   retention: RetentionMode
-  favorite: boolean
+  /** True when the source recording was retained and can be played back. */
+  audioAvailable?: boolean
+  /** Main-process-only filename for the retained recording. Never a user path. */
+  audioFileName?: string
+  audioMimeType?: string
 }
 
 export interface DictionaryEntry {
@@ -168,6 +172,11 @@ export interface CommandResult {
   error?: string
 }
 
+export interface HistoryAudioResult extends CommandResult {
+  dataUrl?: string
+  mimeType?: string
+}
+
 export type AppEventChannel =
   | 'dictation:state'
   | 'recording:start'
@@ -211,8 +220,12 @@ export interface FlowerWhispApi {
   }
   history: {
     delete(id: string): Promise<CommandResult>
-    toggleFavorite(id: string): Promise<CommandResult>
     copy(id: string): Promise<CommandResult>
+    audio(id: string): Promise<HistoryAudioResult>
+    play(id: string): Promise<CommandResult>
+    undo(id: string): Promise<CommandResult>
+    retry(id: string): Promise<CommandResult>
+    extract(id: string): Promise<CommandResult>
   }
   dictionary: {
     save(entry: Omit<DictionaryEntry, 'id' | 'createdAt'> & { id?: string }): Promise<CommandResult>

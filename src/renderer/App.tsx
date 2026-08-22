@@ -1,44 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from 'react'
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import {
-  ArrowUpRight,
   ArrowsClockwise,
   Bell,
   BookOpen,
   CaretRight,
   ChartLineUp,
   Check,
-  CircleNotch,
   ClipboardText,
-  Cloud,
   Copy,
   Desktop,
   DotsThree,
   EnvelopeSimple as EnvelopeIcon,
   FloppyDisk,
   Gear,
-  Heart,
   Info,
   Keyboard,
   List,
-  LockKey,
   MagnifyingGlass,
   Microphone,
   Moon,
   NotePencil,
+  Pause,
   Plus,
   Play,
-  Question,
   Quotes,
   ShieldCheck,
   SidebarSimple,
-  SlidersHorizontal,
   Sparkle,
   Sun,
   TextAa,
   Trash,
-  UserCircle,
-  UsersThree,
   X,
 } from '@phosphor-icons/react'
 import type { Icon as PhosphorIcon } from '@phosphor-icons/react'
@@ -163,8 +155,12 @@ const offlineApi: FlowerWhispApi = {
   },
   history: {
     delete: async () => offlineResponse(),
-    toggleFavorite: async () => offlineResponse(),
     copy: async () => offlineResponse(),
+    audio: async () => offlineResponse(),
+    play: async () => offlineResponse(),
+    undo: async () => offlineResponse(),
+    retry: async () => offlineResponse(),
+    extract: async () => offlineResponse(),
   },
   dictionary: {
     save: async () => offlineResponse(),
@@ -352,13 +348,15 @@ const IconButton = ({
   onClick,
   icon: Icon,
   active = false,
+  disabled = false,
 }: {
   label: string
   onClick: () => void
   icon: NavIcon
   active?: boolean
+  disabled?: boolean
 }) => (
-  <button className={`icon-button ${active ? 'is-active' : ''}`} aria-label={label} title={label} onClick={onClick}>
+  <button className={`icon-button ${active ? 'is-active' : ''}`} aria-label={label} title={label} onClick={onClick} disabled={disabled}>
     <Icon size={17} weight="regular" />
   </button>
 )
@@ -452,42 +450,6 @@ const ShortcutRecorder = ({ label, value, onChange }: { label: string; value: st
   )
 }
 
-const HoldButton = ({ onStart, onStop, disabled = false }: { onStart: () => void; onStop: () => void; disabled?: boolean }) => {
-  const holding = useRef(false)
-  const begin = () => {
-    if (disabled || holding.current) return
-    holding.current = true
-    onStart()
-  }
-  const finish = () => {
-    if (!holding.current) return
-    holding.current = false
-    onStop()
-  }
-  const onPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (event.button !== 0) return
-    event.currentTarget.setPointerCapture(event.pointerId)
-    begin()
-  }
-  const onPointerUp = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
-    finish()
-  }
-  const onKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
-    if ((event.key === ' ' || event.key === 'Enter') && !event.repeat) {
-      event.preventDefault()
-      begin()
-    }
-  }
-  const onKeyUp = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
-    if (event.key === ' ' || event.key === 'Enter') {
-      event.preventDefault()
-      finish()
-    }
-  }
-  return <button className="button button-secondary hold-button" type="button" disabled={disabled} aria-label="Hold Middle Click and speak" onPointerDown={onPointerDown} onPointerUp={onPointerUp} onPointerCancel={finish} onBlur={finish} onKeyDown={onKeyDown} onKeyUp={onKeyUp} onClick={(event) => event.preventDefault()}><Microphone size={16} weight="regular" /><span>Hold Middle Click and speak</span></button>
-}
-
 const WaveBars = ({ level = 0, compact = false }: { level?: number; compact?: boolean }) => {
   const targetLevel = useRef(Math.max(0, Math.min(1, level)))
   const currentLevel = useRef(targetLevel.current)
@@ -554,8 +516,8 @@ const Notice = ({ message, tone, onDismiss }: { message: string; tone: 'success'
   </div>
 )
 
-const Sidebar = ({ page, setPage }: { page: PageId; setPage: (page: PageId) => void }) => (
-  <aside className="sidebar">
+const Sidebar = ({ page, setPage, collapsed }: { page: PageId; setPage: (page: PageId) => void; collapsed: boolean }) => (
+  <aside className={`sidebar ${collapsed ? 'is-collapsed' : ''}`}>
     <div className="brand-lockup">
       <div className="brand-mark" aria-hidden="true">
         <img className="brand-mark-image" src="./flowerwhisp.png" alt="" />
@@ -573,20 +535,25 @@ const Sidebar = ({ page, setPage }: { page: PageId; setPage: (page: PageId) => v
     </nav>
 
     <div className="sidebar-bottom">
-      <button className="nav-item" type="button"><UsersThree size={19} /><span>Invite your team</span></button>
       <button className={`nav-item ${page === 'settings' ? 'is-selected' : ''}`} type="button" onClick={() => setPage('settings')}>
         <Gear size={19} weight={page === 'settings' ? 'bold' : 'regular'} />
         <span>Settings</span>
       </button>
-      <button className="nav-item" type="button"><Question size={19} /><span>Help</span></button>
     </div>
   </aside>
 )
 
-const AppChrome = () => (
+const AppChrome = ({ notificationsOpen, onNotifications, sidebarCollapsed, onToggleSidebar }: { notificationsOpen: boolean; onNotifications: () => void; sidebarCollapsed: boolean; onToggleSidebar: () => void }) => (
   <header className="app-chrome">
-    <div className="app-chrome-left"><button type="button" aria-label="Toggle sidebar"><SidebarSimple size={19} /></button><button type="button" aria-label="Account"><UserCircle size={21} /></button></div>
-    <div className="app-chrome-right"><button className="notification-button" type="button" aria-label="Notifications"><Bell size={19} /><span>3</span></button><button type="button" aria-label="Minimize window" onClick={() => void api.app.minimize()}>−</button><button type="button" aria-label="Maximize window" onClick={() => void api.app.toggleMaximize()}>□</button><button type="button" aria-label="Close window" onClick={() => void api.app.close()}>×</button></div>
+    <div className="app-chrome-left"><button type="button" aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-expanded={!sidebarCollapsed} onClick={onToggleSidebar}><SidebarSimple size={19} /></button></div>
+    <div className="app-chrome-right">
+      <button className={`notification-button ${notificationsOpen ? 'is-active' : ''}`} type="button" aria-label="Notifications" aria-expanded={notificationsOpen} onClick={onNotifications}><Bell size={19} /></button>
+      {notificationsOpen ? <div className="notification-popover" role="dialog" aria-label="Notifications">
+        <div className="notification-popover-heading"><strong>Notifications</strong><button type="button" aria-label="Close notifications" onClick={onNotifications}><X size={15} /></button></div>
+        <p className="notification-empty">You’re all caught up.</p>
+      </div> : null}
+      <button type="button" aria-label="Minimize window" onClick={() => void api.app.minimize()}>−</button><button type="button" aria-label="Maximize window" onClick={() => void api.app.toggleMaximize()}>□</button><button type="button" aria-label="Close window" onClick={() => void api.app.close()}>×</button>
+    </div>
   </header>
 )
 
@@ -602,7 +569,7 @@ const PageHeader = ({ page }: { page: PageId }) => {
   )
 }
 
-const CaptureBand = ({ overlay, settings, onStart, onOpenStyle, onStop, onHoldStart, onHoldStop, onCancel, onCopy, onScratchpad }: { overlay: OverlayState; settings: PublicSettings; onStart: () => void; onOpenStyle: () => void; onStop: () => void; onHoldStart: () => void; onHoldStop: () => void; onCancel: () => void; onCopy: () => void; onScratchpad: () => void }) => {
+const CaptureBand = ({ overlay, onStart, onOpenStyle, onStop, onCancel, onCopy, onScratchpad }: { overlay: OverlayState; onStart: () => void; onOpenStyle: () => void; onStop: () => void; onCancel: () => void; onCopy: () => void; onScratchpad: () => void }) => {
   const active = ['starting', 'recording', 'stopping', 'transcribing', 'processing', 'inserting'].includes(overlay.phase)
   const ready = overlay.phase === 'ready'
   const isError = overlay.phase === 'error'
@@ -675,7 +642,7 @@ const SummaryRail = ({ data }: { data: BootstrapPayload }) => {
 
 type TranscriptAction = 'undo' | 'retry' | 'extract'
 
-const Ledger = ({ records, onCopy, onDelete, onFavorite, onAction }: { records: DictationRecord[]; onCopy: (record: DictationRecord) => void; onDelete: (id: string) => void; onFavorite: (id: string) => void; onAction: (record: DictationRecord, action: TranscriptAction) => void }) => {
+const Ledger = ({ records, onCopy, onDelete, onPlay, playingId, onAction }: { records: DictationRecord[]; onCopy: (record: DictationRecord) => void; onDelete: (id: string) => void; onPlay: (record: DictationRecord) => void; playingId: string | null; onAction: (record: DictationRecord, action: TranscriptAction) => void }) => {
   const [openMenu, setOpenMenu] = useState<string | null>(null)
   return (
     <section className="ledger-section">
@@ -705,7 +672,7 @@ const Ledger = ({ records, onCopy, onDelete, onFavorite, onAction }: { records: 
                 </div>
               </div>
               <div className="ledger-actions">
-                <IconButton label={record.favorite ? 'Remove favorite' : 'Favorite'} icon={Heart} active={record.favorite} onClick={() => onFavorite(record.id)} />
+                <IconButton label={record.audioAvailable ? (playingId === record.id ? 'Pause recording' : 'Play recording') : 'No recording retained'} icon={playingId === record.id ? Pause : Play} active={playingId === record.id} disabled={!record.audioAvailable} onClick={() => onPlay(record)} />
                 <IconButton label="Copy final text" icon={Copy} onClick={() => onCopy(record)} />
                 <div className="transcript-menu-wrap">
                   <IconButton label="More transcript options" icon={DotsThree} active={openMenu === record.id} onClick={() => setOpenMenu((current) => current === record.id ? null : record.id)} />
@@ -725,11 +692,11 @@ const Ledger = ({ records, onCopy, onDelete, onFavorite, onAction }: { records: 
   )
 }
 
-const DictationPage = ({ data, overlay, onStart, onOpenStyle, onStop, onHoldStart, onHoldStop, onCancel, onCopy, onScratchpad, onDelete, onFavorite, onAction }: { data: BootstrapPayload; overlay: OverlayState; onStart: () => void; onOpenStyle: () => void; onStop: () => void; onHoldStart: () => void; onHoldStop: () => void; onCancel: () => void; onCopy: (text?: string) => void; onScratchpad: () => void; onDelete: (id: string) => void; onFavorite: (id: string) => void; onAction: (record: DictationRecord, action: TranscriptAction) => void }) => (
+const DictationPage = ({ data, overlay, onStart, onOpenStyle, onStop, onCancel, onCopy, onScratchpad, onDelete, onPlay, playingId, onAction }: { data: BootstrapPayload; overlay: OverlayState; onStart: () => void; onOpenStyle: () => void; onStop: () => void; onCancel: () => void; onCopy: (text?: string) => void; onScratchpad: () => void; onDelete: (id: string) => void; onPlay: (record: DictationRecord) => void; playingId: string | null; onAction: (record: DictationRecord, action: TranscriptAction) => void }) => (
   <div className="page page-dictation">
-    <CaptureBand overlay={overlay} settings={data.settings} onStart={onStart} onOpenStyle={onOpenStyle} onStop={onStop} onHoldStart={onHoldStart} onHoldStop={onHoldStop} onCancel={onCancel} onCopy={onCopy} onScratchpad={onScratchpad} />
+    <CaptureBand overlay={overlay} onStart={onStart} onOpenStyle={onOpenStyle} onStop={onStop} onCancel={onCancel} onCopy={onCopy} onScratchpad={onScratchpad} />
     <SummaryRail data={data} />
-    <Ledger records={data.records} onCopy={(record) => onCopy(record.finalText)} onDelete={onDelete} onFavorite={onFavorite} onAction={onAction} />
+    <Ledger records={data.records} onCopy={(record) => onCopy(record.finalText)} onDelete={onDelete} onPlay={onPlay} playingId={playingId} onAction={onAction} />
   </div>
 )
 
@@ -752,11 +719,11 @@ const InsightsPage = ({ data }: { data: BootstrapPayload }) => {
   const heatmap = Array.from({ length: 35 }, (_, index) => (index >= 31 && index % 3 === 0 ? 2 : 0))
   return (
     <div className="page page-insights">
-      <div className="insights-tab-row"><button className="is-active" type="button">Your usage</button></div>
+      <div className="insights-tab-row"><span className="insights-tab is-active">Your usage</span></div>
       <div className="insights-metrics">
         <section className="metric-card metric-wpm"><strong>{wordsPerMinute || '—'}</strong><span>WORDS PER MINUTE <Info size={17} /></span><div className="gauge"><div className="gauge-arc" /><span>Top<br /><b>0.1%</b></span></div></section>
         <section className="metric-card metric-fixes"><strong>{(correctedWords + dictionaryFixes).toLocaleString()}</strong><span>FIXES MADE BY FLOW</span><hr /><p>{correctedWords.toLocaleString()} words corrected <Info size={17} /></p><p>{dictionaryFixes.toLocaleString()} dictionary fixes <Info size={17} /></p></section>
-        <section className="metric-card metric-total"><strong>{totalWords.toLocaleString()}</strong><span>TOTAL WORDS DICTATED</span><hr /><p><Desktop size={18} /> Desktop</p><p>{totalWords.toLocaleString()} words</p><button type="button">Download on mobile</button></section>
+        <section className="metric-card metric-total"><strong>{totalWords.toLocaleString()}</strong><span>TOTAL WORDS DICTATED</span><hr /><p><Desktop size={18} /> Desktop</p><p>{totalWords.toLocaleString()} words</p></section>
       </div>
       <div className="insights-lower">
         <section className="usage-card"><div className="insights-card-heading"><h2>Desktop usage</h2><span>TOTAL APPS USED | {appsUsed}</span></div>{usageRows.map(({ icon: Icon, percent, label, count }) => <div className="usage-row" key={label}><Icon size={22} /><span className="usage-bar" style={{ width: `${Math.max(12, percent)}%` }}>{percent}%</span><strong>{count} {label}</strong></div>)}</section>
@@ -766,19 +733,19 @@ const InsightsPage = ({ data }: { data: BootstrapPayload }) => {
   )
 }
 
-const FlowPromo = ({ kind }: { kind: 'dictionary' | 'snippets' }) => kind === 'dictionary' ? (
+const FlowPromo = ({ kind, onAction, onDismiss }: { kind: 'dictionary' | 'snippets'; onAction: () => void; onDismiss?: () => void }) => kind === 'dictionary' ? (
   <section className="flow-promo flow-promo-dictionary">
-    <button className="flow-promo-close" type="button" aria-label="Close">×</button>
+    <button className="flow-promo-close" type="button" aria-label="Close" onClick={onDismiss}>×</button>
     <h2>Flow spells the way <em>you</em> do.</h2>
     <p>Flow learns your unique words and names — automatically or manually. Add personal terms, company jargon, client names, or industry-specific lingo. Share them with your team so everyone stays on the same page.</p>
-    <div className="flow-promo-chips"><button type="button">Add new word</button><span>Wispr Flow</span><span>Samir</span><span>Sara</span><span>Karol</span><span>Spyder</span></div>
+    <div className="flow-promo-chips"><button type="button" onClick={onAction}>Add new word</button><span>Wispr Flow</span><span>Samir</span><span>Sara</span><span>Karol</span><span>Spyder</span></div>
   </section>
 ) : (
   <section className="flow-promo flow-promo-snippets">
     <h2>The stuff <em>you</em> shouldn’t have to re-type.</h2>
     <p>Save text you type often — an email, intro, or prompt — then say a word to drop it in instantly.</p>
     <div className="snippet-promo-examples"><span>“my LinkedIn”</span><b>→</b><span>https://www.linkedin.com/in/john-doe/</span><span>“rewrite prompt”</span><b>→</b><span>Rewrite this to be more concise...</span><span>“intro email”</span><b>→</b><span>Hey, would love to find some time to chat later...</span></div>
-    <button type="button">Add new snippet</button>
+    <button type="button" onClick={onAction}>Add new snippet</button>
   </section>
 )
 
@@ -806,6 +773,7 @@ const PromptEditorModal = ({ title, description, value, onClose, onSave }: { tit
 const DictionaryPage = ({ entries, onRefresh }: { entries: DictionaryEntry[]; onRefresh: () => void }) => {
   const [search, setSearch] = useState('')
   const [showForm, setShowForm] = useState(false)
+  const [showPromo, setShowPromo] = useState(true)
   const [spoken, setSpoken] = useState('')
   const [replacement, setReplacement] = useState('')
   const [correctMisspelling, setCorrectMisspelling] = useState(true)
@@ -817,7 +785,7 @@ const DictionaryPage = ({ entries, onRefresh }: { entries: DictionaryEntry[]; on
   })
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    const response = await api.dictionary.save({ spoken, replacement, scope: shareWithTeam ? 'all' : 'personal', protected: correctMisspelling })
+    const response = await api.dictionary.save({ spoken, replacement, scope: shareWithTeam ? 'technical' : 'personal', protected: correctMisspelling })
     if (response.ok) {
       setSpoken('')
       setReplacement('')
@@ -829,9 +797,9 @@ const DictionaryPage = ({ entries, onRefresh }: { entries: DictionaryEntry[]; on
   }
   return (
     <div className="page page-library reference-library-page">
-      <div className="reference-toolbar"><label className="search-field"><MagnifyingGlass size={19} /><span className="sr-only">Search dictionary</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search" /></label><div><Button variant="secondary">Import</Button><Button variant="primary" onClick={() => setShowForm(true)}>Add new</Button></div></div>
+      <div className="reference-toolbar"><label className="search-field"><MagnifyingGlass size={19} /><span className="sr-only">Search dictionary</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search" /></label><div><Button variant="primary" onClick={() => setShowForm(true)}>Add new</Button></div></div>
       <div className="library-tabs" role="tablist" aria-label="Dictionary scope"><button className={libraryTab === 'all' ? 'is-active' : ''} type="button" role="tab" aria-selected={libraryTab === 'all'} onClick={() => setLibraryTab('all')}>All</button><button className={libraryTab === 'personal' ? 'is-active' : ''} type="button" role="tab" aria-selected={libraryTab === 'personal'} onClick={() => setLibraryTab('personal')}>Personal</button><button className={libraryTab === 'shared' ? 'is-active' : ''} type="button" role="tab" aria-selected={libraryTab === 'shared'} onClick={() => setLibraryTab('shared')}>Shared with team</button></div>
-      <FlowPromo kind="dictionary" />
+      {showPromo ? <FlowPromo kind="dictionary" onAction={() => setShowForm(true)} onDismiss={() => setShowPromo(false)} /> : null}
       <section className="reference-entry-list">{filtered.map((entry) => <article className="reference-entry" key={entry.id}><div><strong>{entry.spoken}</strong><span>{entry.replacement}</span></div><div className="reference-entry-actions"><span className="reference-scope-label">{entry.scope === 'technical' ? 'Shared' : entry.scope === 'personal' ? 'Personal' : 'All apps'}</span><IconButton label="Delete dictionary phrase" icon={Trash} onClick={async () => { await api.dictionary.delete(entry.id); onRefresh() }} /></div></article>)}{filtered.length === 0 ? <div className="reference-empty-state"><BookOpen size={22} /><strong>{search ? 'No matches.' : 'Your dictionary is empty.'}</strong><span>{search ? 'Try a different search.' : 'Add words and names that Flow should spell exactly.'}</span></div> : null}</section>
       {showForm ? <ReferenceModal title="Add to vocabulary" description="Add a word or phrase Flow should recognize exactly." onClose={() => setShowForm(false)}><form className="reference-modal-form" onSubmit={submit}><label htmlFor="spoken">Add a new word</label><input id="spoken" value={spoken} onChange={(event) => setSpoken(event.target.value)} placeholder="e.g. Supabase" required /><label htmlFor="replacement">Correct it to</label><input id="replacement" value={replacement} onChange={(event) => setReplacement(event.target.value)} placeholder="e.g. Supabase" required /><label className="checkbox-row"><input type="checkbox" checked={correctMisspelling} onChange={(event) => setCorrectMisspelling(event.target.checked)} /><span>Correct a misspelling</span></label><label className="checkbox-row"><input type="checkbox" checked={shareWithTeam} onChange={(event) => setShareWithTeam(event.target.checked)} /><span>Share with team</span></label><div className="form-actions"><Button variant="quiet" onClick={() => setShowForm(false)}>Cancel</Button><Button type="submit" variant="primary" icon={Check}>Add word</Button></div></form></ReferenceModal> : null}
     </div>
@@ -842,16 +810,14 @@ const SnippetsPage = ({ snippets, onRefresh }: { snippets: Snippet[]; onRefresh:
   const [selectedId, setSelectedId] = useState(snippets[0]?.id ?? '')
   const [showEditor, setShowEditor] = useState(false)
   const [search, setSearch] = useState('')
-  const [libraryTab, setLibraryTab] = useState<'all' | 'personal' | 'shared'>('personal')
-  const [shareWithTeam, setShareWithTeam] = useState(false)
   const selected = snippets.find((snippet) => snippet.id === selectedId)
   const [trigger, setTrigger] = useState(selected?.trigger ?? ';email')
   const [expansion, setExpansion] = useState(selected?.expansion ?? 'Thanks for reaching out.\nI will get back to you shortly.')
   useEffect(() => { if (selected) { setTrigger(selected.trigger); setExpansion(selected.expansion) } }, [selectedId])
   const filtered = snippets.filter((snippet) => `${snippet.trigger} ${snippet.expansion}`.toLowerCase().includes(search.toLowerCase()))
-  const openNew = () => { setSelectedId(''); setTrigger(''); setExpansion(''); setShareWithTeam(false); setShowEditor(true) }
+  const openNew = () => { setSelectedId(''); setTrigger(''); setExpansion(''); setShowEditor(true) }
   const save = async (event: FormEvent) => { event.preventDefault(); const response = await api.snippets.save({ id: selectedId || undefined, trigger, expansion, enabled: true }); if (response.ok) { setShowEditor(false); onRefresh() } }
-  return <div className="page page-library reference-library-page"><div className="reference-toolbar"><label className="search-field"><MagnifyingGlass size={19} /><span className="sr-only">Search snippets</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search" /></label><div><Button variant="secondary">Import</Button><Button variant="primary" onClick={openNew}>Add new</Button></div></div><div className="library-tabs" role="tablist" aria-label="Snippet scope"><button className={libraryTab === 'all' ? 'is-active' : ''} type="button" role="tab" aria-selected={libraryTab === 'all'} onClick={() => setLibraryTab('all')}>All</button><button className={libraryTab === 'personal' ? 'is-active' : ''} type="button" role="tab" aria-selected={libraryTab === 'personal'} onClick={() => setLibraryTab('personal')}>Personal</button><button className={libraryTab === 'shared' ? 'is-active' : ''} type="button" role="tab" aria-selected={libraryTab === 'shared'} onClick={() => setLibraryTab('shared')}>Shared with team</button></div><FlowPromo kind="snippets" /><section className="reference-entry-list">{filtered.map((snippet) => <article className="reference-entry" key={snippet.id}><div><strong>{snippet.trigger}</strong><span>{snippet.expansion}</span></div><div className="reference-entry-actions"><button type="button" onClick={() => { setSelectedId(snippet.id); setShowEditor(true) }}>Edit</button><IconButton label="Delete snippet" icon={Trash} onClick={async () => { await api.snippets.delete(snippet.id); onRefresh() }} /></div></article>)}{filtered.length === 0 ? <div className="reference-empty-state"><Quotes size={22} /><strong>{search ? 'No matches.' : 'No snippets yet.'}</strong><span>Save an email, intro, or prompt you type often.</span></div> : null}</section>{showEditor ? <ReferenceModal title="Add snippet" description="Say a trigger word and Flow will expand it into the saved text." onClose={() => setShowEditor(false)}><form className="reference-modal-form snippet-modal-form" onSubmit={save}><label htmlFor="snippet-trigger">Snippet</label><input id="snippet-trigger" value={trigger} onChange={(event) => setTrigger(event.target.value)} placeholder="e.g. intro email" required /><label htmlFor="snippet-expansion">Expansion</label><div className="rich-text-editor"><div className="rich-text-toolbar" aria-label="Formatting tools"><button type="button">B</button><button type="button"><em>I</em></button><button type="button">•</button><button type="button">1.</button><button type="button">↗</button></div><textarea id="snippet-expansion" value={expansion} onChange={(event) => setExpansion(event.target.value)} rows={8} placeholder="Write the text Flow should insert." required /><span className="character-count">{expansion.length} characters</span></div><label className="checkbox-row"><input type="checkbox" checked={shareWithTeam} onChange={(event) => setShareWithTeam(event.target.checked)} /><span>Share with team</span></label><div className="form-actions"><Button variant="quiet" onClick={() => setShowEditor(false)}>Cancel</Button><Button type="submit" variant="primary" icon={Check}>Add snippet</Button></div></form></ReferenceModal> : null}</div>
+  return <div className="page page-library reference-library-page"><div className="reference-toolbar"><label className="search-field"><MagnifyingGlass size={19} /><span className="sr-only">Search snippets</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search" /></label><div><Button variant="primary" onClick={openNew}>Add new</Button></div></div><FlowPromo kind="snippets" onAction={openNew} /><section className="reference-entry-list">{filtered.map((snippet) => <article className="reference-entry" key={snippet.id}><div><strong>{snippet.trigger}</strong><span>{snippet.expansion}</span></div><div className="reference-entry-actions"><button type="button" onClick={() => { setSelectedId(snippet.id); setShowEditor(true) }}>Edit</button><IconButton label="Delete snippet" icon={Trash} onClick={async () => { await api.snippets.delete(snippet.id); onRefresh() }} /></div></article>)}{filtered.length === 0 ? <div className="reference-empty-state"><Quotes size={22} /><strong>{search ? 'No matches.' : 'No snippets yet.'}</strong><span>Save an email, intro, or prompt you type often.</span></div> : null}</section>{showEditor ? <ReferenceModal title={selectedId ? 'Edit snippet' : 'Add snippet'} description="Say a trigger word and Flow will expand it into the saved text." onClose={() => setShowEditor(false)}><form className="reference-modal-form snippet-modal-form" onSubmit={save}><label htmlFor="snippet-trigger">Snippet</label><input id="snippet-trigger" value={trigger} onChange={(event) => setTrigger(event.target.value)} placeholder="e.g. intro email" required /><label htmlFor="snippet-expansion">Expansion</label><div className="rich-text-editor"><textarea id="snippet-expansion" value={expansion} onChange={(event) => setExpansion(event.target.value)} rows={8} placeholder="Write the text Flow should insert." required /><span className="character-count">{expansion.length} characters</span></div><div className="form-actions"><Button variant="quiet" onClick={() => setShowEditor(false)}>Cancel</Button><Button type="submit" variant="primary" icon={Check}>{selectedId ? 'Save snippet' : 'Add snippet'}</Button></div></form></ReferenceModal> : null}</div>
 }
 
 type StyleTabId = 'personal' | 'work' | 'email' | 'other' | 'cleanup'
@@ -929,20 +895,19 @@ const StylePage = ({ styles, settings, onRefresh }: { styles: StyleProfile[]; se
   </div>
 }
 
-const HowItWorksModal = ({ onClose }: { onClose: () => void }) => {
+const HowItWorksModal = ({ onClose, onTryItOut }: { onClose: () => void; onTryItOut: () => void }) => {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onClose])
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="video-modal" role="dialog" aria-modal="true" aria-labelledby="transform-video-title"><div className="video-modal-header"><div><span className="detail-kicker">Transforms · Beta</span><h2 id="transform-video-title">How to use Transforms (Beta)</h2></div><IconButton label="Close video" icon={X} onClick={onClose} /></div><div className="video-stage"><button className="video-play" type="button" aria-label="Play transform tutorial"><Play size={30} weight="fill" /></button><span>Transforms work anywhere you write.</span></div><div className="video-modal-footer"><button type="button">Copy link</button><span>1:14</span><button type="button">1×</button><Button variant="primary" onClick={onClose}>Try it out</Button></div></section></div>
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="video-modal" role="dialog" aria-modal="true" aria-labelledby="transform-video-title"><div className="video-modal-header"><div><span className="detail-kicker">Transforms · Beta</span><h2 id="transform-video-title">How to use Transforms</h2><p>Build a reusable instruction and enable it when you want to rewrite dictated text.</p></div><IconButton label="Close transform guide" icon={X} onClick={onClose} /></div><div className="video-stage how-it-works-copy"><ol><li>Create a transform with a clear name and instruction.</li><li>Enable it from the transform card when you want it available.</li><li>Use the configured transform shortcut while text is selected.</li></ol><span>Transforms work anywhere you write when the selected transform is enabled.</span></div><div className="video-modal-footer"><Button variant="quiet" onClick={onClose}>Close</Button><Button variant="primary" onClick={onTryItOut}>Create a transform</Button></div></section></div>
 }
 
 const TransformsPage = ({ transforms, onRefresh }: { transforms: TransformProfile[]; onRefresh: () => void }) => {
   const [showForm, setShowForm] = useState(false)
   const [showHowItWorks, setShowHowItWorks] = useState(false)
   const [editingTransform, setEditingTransform] = useState<TransformProfile | null>(null)
-  const [optedIn, setOptedIn] = useState(true)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [instructions, setInstructions] = useState('')
@@ -964,7 +929,7 @@ const TransformsPage = ({ transforms, onRefresh }: { transforms: TransformProfil
     return response
   }
   return <div className="page page-transforms reference-transforms-page">
-    <div className="transform-options"><span>Opt in</span><Toggle label="Opt in" checked={optedIn} onChange={setOptedIn} /><span className="transform-key-help">Win&nbsp;&nbsp; Alt&nbsp;&nbsp; o&nbsp;&nbsp; to view changes</span></div>
+     <div className="transform-options"><span>Enable a transform from its card when you want it available.</span><span className="transform-key-help">Use the configured transform shortcut to view changes.</span></div>
     <section className="transform-promo"><h2>Transform works anywhere you write</h2><p>Apply a Transform to rewrite, clean up, or restructure text after you dictate.</p><div><Button variant="secondary" onClick={() => setShowForm((value) => !value)}>Try it out</Button><button type="button" onClick={() => setShowHowItWorks(true)}>How it works</button></div></section>
     <div className="transform-heading"><h2>My Transforms</h2><button type="button" onClick={() => void reset()}>↶ &nbsp; Reset to defaults</button><Button variant="primary" onClick={() => setShowForm(true)}>Create New</Button></div>
     {showForm ? <form className="transform-form" onSubmit={save}><div className="field-grid"><div><label htmlFor="transform-name">Name</label><input id="transform-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Make it concise" required /></div><div><label htmlFor="transform-description">Description</label><input id="transform-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="One-line explanation" /></div></div><label htmlFor="transform-instructions">Prompt</label><textarea id="transform-instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} rows={4} placeholder="Describe how Flow should rewrite the selected text." required /><div className="form-actions"><Button variant="primary" type="submit" icon={Check}>Save</Button><Button variant="quiet" onClick={() => setShowForm(false)}>Cancel</Button></div></form> : null}
@@ -973,7 +938,7 @@ const TransformsPage = ({ transforms, onRefresh }: { transforms: TransformProfil
       {customTransforms.map((transform) => <div className="transform-card" key={transform.id}><div className="transform-shortcut">{formatShortcut(transform.shortcut).split(' + ').map((part) => <kbd key={part}>{part}</kbd>)}</div><h3>{transform.name}</h3><p>{transform.description || 'Custom rewrite instruction'}</p><div className="transform-card-actions"><Button variant="quiet" onClick={() => setEditingTransform(transform)}>Edit prompt</Button><Toggle label={transform.name} checked={transform.enabled} onChange={(value) => { void api.transforms.save({ ...transform, enabled: value }).then(onRefresh) }} /><IconButton label={`Delete ${transform.name}`} icon={Trash} onClick={async () => { await api.transforms.delete(transform.id); onRefresh() }} /></div></div>)}
       <button className="transform-card create-transform-card" type="button" onClick={() => setShowForm(true)}><span className="transform-plus">＋</span><h3>Create your own</h3><p>Upload your own prompt</p></button>
     </div>
-    {showHowItWorks ? <HowItWorksModal onClose={() => setShowHowItWorks(false)} /> : null}
+    {showHowItWorks ? <HowItWorksModal onClose={() => setShowHowItWorks(false)} onTryItOut={() => { setShowHowItWorks(false); setShowForm(true) }} /> : null}
     {editingTransform ? <PromptEditorModal title={`Edit ${editingTransform.name} prompt`} description="Customize the instruction that Flow sends to the transform stage." value={editingTransform.instructions} onClose={() => setEditingTransform(null)} onSave={savePrompt} /> : null}
   </div>
 }
@@ -981,16 +946,15 @@ const TransformsPage = ({ transforms, onRefresh }: { transforms: TransformProfil
 const ScratchpadPage = ({ value, onRefresh }: { value: string; onRefresh: () => void }) => {
   const [draft, setDraft] = useState(value)
   const [search, setSearch] = useState('')
-  const [addToFlowBar, setAddToFlowBar] = useState(true)
   useEffect(() => setDraft(value), [value])
   const save = async () => { await api.scratchpad.save(draft); onRefresh() }
   const hasNote = Boolean(draft.trim())
   const matchesSearch = !search.trim() || draft.toLowerCase().includes(search.trim().toLowerCase())
   return <div className="page page-scratchpad reference-scratchpad-page">
-    <div className="scratchpad-reference-toolbar"><div className="scratchpad-beta-label"><strong>Scratchpad</strong><span>Beta</span></div><div className="scratchpad-flowbar-setting"><span>Add to Flow Bar</span><Toggle label="Add Scratchpad to Flow Bar" checked={addToFlowBar} onChange={setAddToFlowBar} /><button type="button" className="shortcut-link">Click to enable shortcut</button></div></div>
+     <div className="scratchpad-reference-toolbar"><div className="scratchpad-beta-label"><strong>Scratchpad</strong><span>Beta</span></div><span className="scratchpad-private-label">Private workspace</span></div>
     <section className="scratchpad-reference-hero"><div><h2>For quick thoughts you want to come back to</h2><p>Scratchpad keeps a private note close by while you work. Dictate into it without inserting anything into another app.</p></div><Button variant="primary" icon={Plus} onClick={() => setDraft('')}>Start new note</Button></section>
     <div className="scratchpad-recents-heading"><div><h3>Recents</h3><span>{hasNote ? '1 note' : 'No saved notes'}</span></div><div className="scratchpad-recents-actions"><label className="search-field"><MagnifyingGlass size={17} /><span className="sr-only">Search notes</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search" /></label><IconButton label="Refresh notes" icon={ArrowsClockwise} onClick={onRefresh} /><IconButton label="New note" icon={Plus} onClick={() => setDraft('')} /></div></div>
-    <div className="scratchpad-reference-layout"><aside className="scratchpad-note-list">{hasNote && matchesSearch ? <button className="scratchpad-note-row is-selected" type="button" onClick={() => undefined}><strong>Scratchpad note</strong><span>{draft.trim().slice(0, 72)}{draft.trim().length > 72 ? '…' : ''}</span></button> : <div className="scratchpad-no-notes">No notes found</div>}</aside><section className="scratchpad-sheet"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Start writing or dictate something here." aria-label="Scratchpad text" /><div className="scratchpad-footer"><span><ShieldCheck size={14} /> Never inserted into another application</span><span>{draft.trim() ? `${draft.trim().split(/\s+/).length} words` : 'Empty workspace'}</span><Button variant="secondary" icon={FloppyDisk} onClick={save}>Save note</Button></div></section></div>
+     <div className="scratchpad-reference-layout"><aside className="scratchpad-note-list">{hasNote && matchesSearch ? <div className="scratchpad-note-row is-selected" role="status"><strong>Scratchpad note</strong><span>{draft.trim().slice(0, 72)}{draft.trim().length > 72 ? '…' : ''}</span></div> : <div className="scratchpad-no-notes">No notes found</div>}</aside><section className="scratchpad-sheet"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Start writing or dictate something here." aria-label="Scratchpad text" /><div className="scratchpad-footer"><span><ShieldCheck size={14} /> Never inserted into another application</span><span>{draft.trim() ? `${draft.trim().split(/\s+/).length} words` : 'Empty workspace'}</span><Button variant="secondary" icon={FloppyDisk} onClick={save}>Save note</Button></div></section></div>
   </div>
 }
 
@@ -1000,7 +964,7 @@ const ShortcutEditorModal = ({ draft, onClose, onChange }: { draft: PublicSettin
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onClose])
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="shortcut-modal" role="dialog" aria-modal="true" aria-labelledby="shortcut-modal-title"><div className="reference-modal-heading"><div><span className="detail-kicker">Settings</span><h2 id="shortcut-modal-title">Shortcuts</h2><p>Change how Flow starts, finishes, and recovers dictation.</p></div><IconButton label="Close shortcuts" icon={X} onClick={onClose} /></div><div className="shortcut-editor-list"><div className="shortcut-editor-row"><div><strong>Push to talk</strong><span>Hold Middle Click and speak.</span></div><span className="shortcut-token">Middle Click</span></div><div className="shortcut-editor-row"><div><strong>Hands-free mode</strong><span>Toggle dictation on and off.</span></div><ShortcutRecorder label="Hands-free mode shortcut" value={draft.toggleShortcut} onChange={(value) => onChange('toggleShortcut', value)} /></div><div className="shortcut-editor-guidance"><Keyboard size={16} /><span>{SHORTCUT_REQUIREMENT} Windows Copilot keys are captured as F23 when Windows exposes them to the app.</span></div><div className="shortcut-editor-row"><div><strong>Press Enter</strong><span>Start a dictation from the active window.</span></div><button className="shortcut-placeholder" type="button">Click to add</button></div><div className="shortcut-editor-row"><div><strong>Command Mode</strong><span>Hold to issue a command instead of dictating.</span></div><span className="shortcut-token">Ctrl + Win + Alt</span></div><div className="shortcut-editor-row"><div><strong>Paste last transcript</strong><span>Paste the most recent result.</span></div><span className="shortcut-token">Alt + Shift + Z</span></div><div className="shortcut-editor-row"><div><strong>Copy last transcript</strong><span>Copy the most recent result.</span></div><span className="shortcut-token">Alt + Shift + X</span></div><div className="shortcut-editor-row"><div><strong>Open Scratchpad</strong><span>Open the private writing space.</span></div><button className="shortcut-placeholder" type="button">Click to add</button></div><div className="shortcut-editor-row"><div><strong>Transform view changes</strong><span>Open the latest transform comparison.</span></div><span className="shortcut-token">Win + Alt + O</span></div></div><div className="shortcut-modal-footer"><span>Press Esc to close</span><Button variant="primary" onClick={onClose}>Done</Button></div></section></div>
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="shortcut-modal" role="dialog" aria-modal="true" aria-labelledby="shortcut-modal-title"><div className="reference-modal-heading"><div><span className="detail-kicker">Settings</span><h2 id="shortcut-modal-title">Shortcuts</h2><p>Change the shortcuts that this build actually supports.</p></div><IconButton label="Close shortcuts" icon={X} onClick={onClose} /></div><div className="shortcut-editor-list"><div className="shortcut-editor-row"><div><strong>Push to talk</strong><span>Hold Middle Click and speak inside the Flow window.</span></div><span className="shortcut-token">Middle Click</span></div><div className="shortcut-editor-row"><div><strong>Hands-free mode</strong><span>Toggle dictation on and off from anywhere.</span></div><ShortcutRecorder label="Hands-free mode shortcut" value={draft.toggleShortcut} onChange={(value) => onChange('toggleShortcut', value)} /></div><div className="shortcut-editor-guidance"><Keyboard size={16} /><span>{SHORTCUT_REQUIREMENT} Windows Copilot keys are captured as F23 when Windows exposes them to the app.</span></div></div><div className="shortcut-modal-footer"><span>Press Esc to close</span><Button variant="primary" onClick={onClose}>Done</Button></div></section></div>
 }
 
 const SettingsPage = ({ data, onRefresh, onThemePreview }: { data: BootstrapPayload; onRefresh: () => void; onThemePreview: (theme: PublicSettings['theme']) => void }) => {
@@ -1035,10 +999,6 @@ const SettingsPage = ({ data, onRefresh, onThemePreview }: { data: BootstrapPayl
             <SettingRow label="Show Flow Bar at all times" description=""><Toggle label="Show Flow Bar at all times" checked={draft.showPill} onChange={(value) => void persist({ showPill: value })} /></SettingRow>
             <SettingRow label="Show app in dock" description=""><Toggle label="Show app in dock" checked={draft.showInDock} onChange={(value) => void persist({ showInDock: value })} /></SettingRow>
           </SettingGroup>
-          <SettingGroup title="Sound">
-            <SettingRow label="Dictation and notification sounds" description=""><Toggle label="Dictation and notification sounds" checked={draft.playSounds} onChange={(value) => void persist({ playSounds: value })} /></SettingRow>
-            <SettingRow label="Mute music while dictating" description=""><Toggle label="Mute music while dictating" checked={draft.muteMusicWhileDictating} onChange={(value) => void persist({ muteMusicWhileDictating: value })} /></SettingRow>
-          </SettingGroup>
         </SettingsSection>
       case 'general':
         const requestedShortcut = draft.toggleShortcut
@@ -1053,9 +1013,8 @@ const SettingsPage = ({ data, onRefresh, onThemePreview }: { data: BootstrapPayl
           <SettingRow label="Toggle dictation" description={shortcutDescription}><div className="shortcut-setting-control"><ShortcutRecorder label="Toggle dictation shortcut" value={requestedShortcut} onChange={(value) => persist({ toggleShortcut: value })} /><span className={`shortcut-status ${data.shortcutRegistered ? 'is-ready' : 'is-unavailable'}`} role="status"><span className="shortcut-status-dot" />{shortcutStatus}</span></div></SettingRow>
           <SettingRow label="Shortcuts" description="Push to talk, hands-free mode, and transcript actions."><Button variant="secondary" icon={Keyboard} onClick={() => setShowShortcutEditor(true)}>Edit shortcuts</Button></SettingRow>
           <SettingRow label="Hold to dictate" description="Available inside FlowerWhisp only; system-wide key-up support is not available in this Electron build."><span className="setting-value"><kbd>Middle Click</kbd><span>Dictation page</span></span></SettingRow>
-          <SettingRow label="Microphone" description="Communications - Array (Realtek(R) Audio)"><button className="setting-change" type="button">Change</button></SettingRow>
-          <SettingRow label="Dictation Languages" description="English"><button className="setting-change" type="button">Change</button></SettingRow>
-          <SettingRow label="App Language" description="Select your preferred Wispr Flow Hub language"><select value="English" aria-label="App Language" onChange={() => undefined}><option>English</option></select></SettingRow>
+          <SettingRow label="Microphone" description="Used by the browser capture surface."><span className="setting-value">{data.settings.microphoneLabel || 'System default microphone'}</span></SettingRow>
+          <SettingRow label="Dictation language" description="Language sent to the transcription provider."><select value={draft.language} aria-label="Dictation language" onChange={(event) => update('language', event.target.value)}><option value="en">English</option><option value="hi">Hindi</option><option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option></select></SettingRow>
         </SettingsSection>
       case 'ai':
         return <SettingsSection id="ai" title="Providers" description="">
@@ -1115,7 +1074,7 @@ const OverlayPill = ({ overlay }: { overlay: OverlayState }) => {
     ? Math.max(overlay.elapsedMs, clockNow - timerStart.current.startedAt)
     : overlay.elapsedMs
 
-  if (resting) return <div className="overlay-root is-resting" role="status" aria-label="Flow is ready"><span className="overlay-idle-mark" /></div>
+  if (resting) return <div className="overlay-root is-resting" role="status" aria-label="Flow is ready"><div className="overlay-pill is-idle"><span className="overlay-idle-dot" /><span className="sr-only">Flow is ready</span></div></div>
   const stateLabel = `${phaseLabel[overlay.phase]}${overlay.message ? `: ${overlay.message}` : ''}`
   return <div className={`overlay-root ${busy ? 'is-busy' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`}><div className={`overlay-pill ${recording ? 'is-recording' : ''} ${processing ? 'is-processing' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`} aria-label={stateLabel} aria-live="polite" data-phase={overlay.phase}><span className="sr-only">{stateLabel}</span><div className="overlay-copy"><div className="overlay-state"><span className={`overlay-dot ${busy ? 'is-live' : ''}`} /><span className="overlay-label">{phaseLabel[overlay.phase]}</span><span className="overlay-mode">{overlay.mode === 'hold' ? 'hold' : 'toggle'}</span><span className="overlay-time">{formatDuration(liveElapsedMs)}</span></div><p>{overlay.message}</p></div>{busy ? <IconButton label="Cancel dictation" icon={X} onClick={() => void api.dictation.cancel()} /> : null}{recording ? <PillGraph level={overlay.level} elapsedMs={liveElapsedMs} /> : null}{processing ? <span className="overlay-processing" aria-label="Processing" /> : null}{recording && overlay.mode === 'toggle' ? <IconButton label="Finish dictation" icon={Check} onClick={() => void api.dictation.stop()} /> : null}{ready ? <><IconButton label="Copy transcript" icon={Copy} onClick={() => void api.dictation.copy(overlay.result)} /><IconButton label="Send transcript to Scratchpad" icon={NotePencil} onClick={() => void api.dictation.sendToScratchpad(overlay.result)} /></> : null}{error ? <IconButton label="Dismiss error" icon={X} onClick={() => void api.dictation.cancel()} /> : null}</div></div>
 }
@@ -1127,6 +1086,10 @@ export function App() {
   const [overlay, setOverlay] = useState<OverlayState>(emptyOverlay)
   const [themePreview, setThemePreview] = useState<PublicSettings['theme'] | null>(null)
   const [notice, setNotice] = useState<{ message: string; tone: 'success' | 'error' | 'neutral' } | null>(null)
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [playingId, setPlayingId] = useState<string | null>(null)
+  const playingAudioRef = useRef<HTMLAudioElement | null>(null)
   const captureRef = useRef<{ sessionId: string; recorder: MediaRecorder; stream: MediaStream; chunks: Blob[]; startedAt: number; audioContext: AudioContext | null; levelTimer: number | null; cancelled: boolean } | null>(null)
 
   useEffect(() => {
@@ -1141,6 +1104,11 @@ export function App() {
     const timeout = window.setTimeout(() => setNotice(null), 4_200)
     return () => window.clearTimeout(timeout)
   }, [notice])
+
+  useEffect(() => () => {
+    playingAudioRef.current?.pause()
+    playingAudioRef.current = null
+  }, [])
 
   const refresh = useCallback(async () => {
     const next = await api.bootstrap()
@@ -1210,10 +1178,27 @@ export function App() {
       const audioContext = new AudioContext()
       capture.audioContext = audioContext
       const analyser = audioContext.createAnalyser()
-      analyser.fftSize = 256
+      analyser.fftSize = 512
+      analyser.smoothingTimeConstant = 0.28
       audioContext.createMediaStreamSource(stream).connect(analyser)
       const samples = new Uint8Array(analyser.fftSize)
-      const tick = () => { if (!captureRef.current || captureRef.current.sessionId !== capture.sessionId) return; analyser.getByteTimeDomainData(samples); let sum = 0; for (const sample of samples) { const normalized = (sample - 128) / 128; sum += normalized * normalized } api.audio.reportLevel(capture.sessionId, Math.min(1, Math.sqrt(sum / samples.length) * 3.8)) }
+      const frequencies = new Uint8Array(analyser.frequencyBinCount)
+      try { await audioContext.resume() } catch { /* Chromium may keep a background context suspended; capture still remains valid. */ }
+      const tick = () => {
+        if (!captureRef.current || captureRef.current.sessionId !== capture.sessionId) return
+        analyser.getByteTimeDomainData(samples)
+        analyser.getByteFrequencyData(frequencies)
+        let sum = 0
+        let frequencySum = 0
+        for (const sample of samples) {
+          const normalized = (sample - 128) / 128
+          sum += normalized * normalized
+        }
+        for (const sample of frequencies) frequencySum += sample
+        const rmsLevel = Math.sqrt(sum / samples.length) * 5.2
+        const frequencyLevel = (frequencySum / Math.max(1, frequencies.length)) / 255 * 2.1
+        api.audio.reportLevel(capture.sessionId, Math.min(1, Math.max(rmsLevel, frequencyLevel)))
+      }
       tick()
       capture.levelTimer = window.setInterval(tick, 80)
     } catch (error) {
@@ -1250,33 +1235,76 @@ export function App() {
 
   const start = async (mode: DictationMode = 'toggle') => { const response = await api.dictation.start({ mode }); if (!response.ok) notify(response.error ?? 'Could not start dictation.', 'error') }
   const stop = async () => { const response = await api.dictation.stop(); if (!response.ok) notify(response.error ?? 'Could not finish dictation.', 'error') }
-  const startHold = async () => { await start('hold') }
-  const stopHold = async () => { await stop() }
   const cancel = async () => { await api.dictation.cancel() }
   const copy = async (text = overlay.result) => { const response = await api.dictation.copy(text); if (response.ok) { notify(response.message ?? 'Copied for paste.'); void refresh() } else notify(response.error ?? 'Could not copy transcript.', 'error') }
   const scratchpad = async (text = overlay.result) => { const response = await api.dictation.sendToScratchpad(text); if (response.ok) { notify(response.message ?? 'Added to Scratchpad.'); setPage('scratchpad'); void refresh() } else notify(response.error ?? 'Could not update Scratchpad.', 'error') }
   const deleteRecord = async (id: string) => { const response = await api.history.delete(id); if (response.ok) { notify(response.message ?? 'Deleted.'); void refresh() } else notify(response.error ?? 'Could not delete dictation.', 'error') }
-  const favoriteRecord = async (id: string) => { await api.history.toggleFavorite(id); void refresh() }
-  const copyRecord = async (record: DictationRecord) => { if (record.finalText) await copy(record.finalText); else notify('This record kept aggregate data only.', 'neutral') }
+  const playRecord = async (record: DictationRecord) => {
+    if (!record.audioAvailable) {
+      notify('This transcript was created before audio playback was enabled, so no recording is available.', 'neutral')
+      return
+    }
+    if (playingId === record.id) {
+      playingAudioRef.current?.pause()
+      playingAudioRef.current = null
+      setPlayingId(null)
+      return
+    }
+    playingAudioRef.current?.pause()
+    setPlayingId(null)
+    const response = await api.history.audio(record.id)
+    if (!response.ok || !response.dataUrl) {
+      const fallback = await api.history.play(record.id)
+      notify(fallback.ok ? fallback.message ?? 'Playing recording in the system audio player.' : response.error ?? fallback.error ?? 'The retained recording could not be opened.', fallback.ok ? 'neutral' : 'error')
+      return
+    }
+    const audio = new Audio(response.dataUrl)
+    audio.onended = () => {
+      if (playingAudioRef.current === audio) {
+        playingAudioRef.current = null
+        setPlayingId(null)
+      }
+    }
+    audio.onerror = () => {
+      if (playingAudioRef.current === audio) {
+        playingAudioRef.current = null
+        setPlayingId(null)
+      }
+      notify('The retained recording could not be played.', 'error')
+    }
+    playingAudioRef.current = audio
+    try {
+      await audio.play()
+      setPlayingId(record.id)
+    } catch {
+      playingAudioRef.current = null
+      const fallback = await api.history.play(record.id)
+      notify(fallback.ok ? fallback.message ?? 'Playing recording in the system audio player.' : fallback.error ?? 'The retained recording could not be played.', fallback.ok ? 'neutral' : 'error')
+    }
+  }
   const transcriptAction = async (record: DictationRecord, action: TranscriptAction) => {
     if (action === 'undo') {
-      const source = record.rawText || record.cleanedText || record.finalText
-      if (source) await copy(source)
-      else notify('The original dictation was not retained for this record.', 'neutral')
+      const response = await api.history.undo(record.id)
+      if (response.ok) { notify(response.message ?? 'AI edits were undone.'); void refresh() }
+      else notify(response.error ?? 'Could not undo the AI edit.', 'error')
       return
     }
     if (action === 'retry') {
-      notify('Retry transcript is available from a fresh dictation. The retained text is unchanged.', 'neutral')
+      const response = await api.history.retry(record.id)
+      if (response.ok) { notify(response.message ?? 'Retried transcript.'); void refresh() }
+      else notify(response.error ?? 'Could not retry transcript.', 'error')
       return
     }
-    notify('Audio extraction is unavailable because this build does not retain audio files.', 'neutral')
+    const response = await api.history.extract(record.id)
+    if (response.ok) notify(response.message ?? 'Audio extracted as FLAC.')
+    else if (response.error !== 'Audio extraction canceled.') notify(response.error ?? 'Could not extract audio.', 'error')
   }
 
   if (isOverlay) return <OverlayPill overlay={overlay} />
 
   const renderPage = () => {
     switch (page) {
-      case 'dictation': return <DictationPage data={data} overlay={overlay} onStart={() => void start()} onOpenStyle={() => setPage('style')} onStop={() => void stop()} onHoldStart={() => void startHold()} onHoldStop={() => void stopHold()} onCancel={() => void cancel()} onCopy={() => void copy()} onScratchpad={() => void scratchpad()} onDelete={deleteRecord} onFavorite={favoriteRecord} onAction={transcriptAction} />
+      case 'dictation': return <DictationPage data={data} overlay={overlay} onStart={() => void start()} onOpenStyle={() => setPage('style')} onStop={() => void stop()} onCancel={() => void cancel()} onCopy={() => void copy()} onScratchpad={() => void scratchpad()} onDelete={deleteRecord} onPlay={playRecord} playingId={playingId} onAction={transcriptAction} />
       case 'insights': return <InsightsPage data={data} />
       case 'dictionary': return <DictionaryPage entries={data.dictionary} onRefresh={() => void refresh()} />
       case 'snippets': return <SnippetsPage snippets={data.snippets} onRefresh={() => void refresh()} />
@@ -1287,5 +1315,5 @@ export function App() {
     }
   }
 
-  return <div className={`app-shell theme-${themePreview ?? data.settings.theme}`}><a className="skip-link" href="#main-content">Skip to content</a><AppChrome /><Sidebar page={page} setPage={setPage} /><main className="main-canvas" id="main-content" tabIndex={-1}><div className="main-inner"><PageHeader page={page} />{notice ? <Notice message={notice.message} tone={notice.tone} onDismiss={() => setNotice(null)} /> : null}{renderPage()}</div></main></div>
+  return <div className={`app-shell theme-${themePreview ?? data.settings.theme} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}><a className="skip-link" href="#main-content">Skip to content</a><AppChrome notificationsOpen={notificationsOpen} onNotifications={() => setNotificationsOpen((current) => !current)} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((current) => !current)} /><Sidebar page={page} setPage={setPage} collapsed={sidebarCollapsed} /><main className="main-canvas" id="main-content" tabIndex={-1}><div className="main-inner"><PageHeader page={page} />{notice ? <Notice message={notice.message} tone={notice.tone} onDismiss={() => setNotice(null)} /> : null}{renderPage()}</div></main></div>
 }

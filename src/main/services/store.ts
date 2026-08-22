@@ -35,7 +35,11 @@ export const defaultSettings: PublicSettings = {
   cleanupLevel: 'light',
   cleanupPrompts: { ...DEFAULT_CLEANUP_PROMPTS },
   defaultStyle: 'personal-casual',
-  toggleShortcut: 'Control+Super+Space',
+  // Keep the first-run accelerator on the stable Ctrl/Shift path. Windows
+  // reserves the Win/Super key for shell shortcuts, and Electron can reject
+  // or crash while registering a Super chord before the user has configured
+  // their own shortcut.
+  toggleShortcut: 'Control+Shift+Space',
   holdShortcut: 'Control+Shift+Space',
   microphoneLabel: 'System default microphone',
   localCommand: '',

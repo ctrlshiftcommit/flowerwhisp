@@ -100,7 +100,7 @@ export class DictationPipeline {
       aiFixCount: changedWordCount(cleanedText, finalText),
       insertionOutcome: 'not-attempted',
       retention,
-      favorite: false,
+      audioAvailable: false,
     }
 
     await this.store.update((current) => {
@@ -127,4 +127,3 @@ export class DictationPipeline {
     }
   }
 }
-

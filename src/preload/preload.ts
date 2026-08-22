@@ -37,8 +37,12 @@ const api: FlowerWhispApi = {
   },
   history: {
     delete: (id) => ipcRenderer.invoke('history:delete', id),
-    toggleFavorite: (id) => ipcRenderer.invoke('history:favorite', id),
     copy: (id) => ipcRenderer.invoke('history:copy', id),
+    audio: (id) => ipcRenderer.invoke('history:audio', id),
+    play: (id) => ipcRenderer.invoke('history:play', id),
+    undo: (id) => ipcRenderer.invoke('history:undo', id),
+    retry: (id) => ipcRenderer.invoke('history:retry', id),
+    extract: (id) => ipcRenderer.invoke('history:extract', id),
   },
   dictionary: {
     save: (entry) => ipcRenderer.invoke('dictionary:save', entry),
