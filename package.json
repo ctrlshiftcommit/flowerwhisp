@@ -1,0 +1,64 @@
+{
+  "name": "flowerwhisp",
+  "productName": "FlowerWhisp",
+  "version": "0.1.0",
+  "description": "A quiet, local-first desktop dictation utility.",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "dev": "concurrently -k -n renderer,electron -c cyan,magenta \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite --host 127.0.0.1",
+    "dev:electron": "wait-on http://127.0.0.1:5173 && electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build:main": "esbuild src/main/main.ts --bundle --platform=node --format=esm --external:electron --outfile=dist/main/main.js --sourcemap",
+    "build:preload": "esbuild src/preload/preload.ts --bundle --platform=browser --format=cjs --external:electron --outfile=dist/preload/preload.cjs --sourcemap",
+    "build:renderer": "vite build",
+    "build": "npm run typecheck && npm run build:main && npm run build:preload && npm run build:renderer",
+    "start": "npm run build && electron .",
+    "package": "npm run build && electron-builder --win portable",
+    "smoke": "node scripts/electron-smoke.mjs"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "^2.1.7",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-react": "^4.4.1",
+    "concurrently": "^9.1.2",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.25.5",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0",
+    "vitest": "^3.2.4",
+    "wait-on": "^8.0.3"
+  },
+  "build": {
+    "appId": "com.flowerwhisp.desktop",
+    "productName": "FlowerWhisp",
+    "artifactName": "FlowerWhisp-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    }
+  }
+}

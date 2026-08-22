@@ -1,0 +1,34 @@
+import { describe, expect, it } from 'vitest'
+
+import { isValidShortcut } from './shortcuts'
+
+describe('isValidShortcut', () => {
+  it('accepts common toggle accelerators with a modifier and key', () => {
+    expect(isValidShortcut('Control+Super+Space')).toBe(true)
+    expect(isValidShortcut('Control+Space')).toBe(true)
+    expect(isValidShortcut('Alt+F8')).toBe(true)
+  })
+
+  it('rejects modifier-only and unmodified toggle values', () => {
+    expect(isValidShortcut('Control+Super')).toBe(false)
+    expect(isValidShortcut('A+B')).toBe(false)
+    expect(isValidShortcut('F1')).toBe(false)
+  })
+
+  it('rejects modifier-only values for every configurable shortcut', () => {
+    expect(isValidShortcut('Control+Super')).toBe(false)
+    expect(isValidShortcut('Control')).toBe(false)
+    expect(isValidShortcut('A+B')).toBe(false)
+  })
+
+  it('accepts multi-modifier keys and Copilot-compatible function keys', () => {
+    expect(isValidShortcut('Control+Shift+Tab')).toBe(true)
+    expect(isValidShortcut('Super+Shift+F23')).toBe(true)
+  })
+
+  it('rejects duplicate or unknown accelerator parts', () => {
+    expect(isValidShortcut('Control+Control+Space')).toBe(false)
+    expect(isValidShortcut('Control+A+B')).toBe(false)
+    expect(isValidShortcut('Control+Super+NotAKey')).toBe(false)
+  })
+})

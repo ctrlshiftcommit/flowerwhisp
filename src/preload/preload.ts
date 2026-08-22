@@ -1,0 +1,62 @@
+import { contextBridge, ipcRenderer } from 'electron'
+
+import type { AppEventChannel, FlowerWhispApi, PublicSettings } from '../shared/ipc'
+
+const on = (channel: AppEventChannel, listener: (payload: unknown) => void): (() => void) => {
+  const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload)
+  ipcRenderer.on(channel, handler)
+  return () => ipcRenderer.removeListener(channel, handler)
+}
+
+const api: FlowerWhispApi = {
+  app: {
+    health: () => ipcRenderer.invoke('app:health'),
+    quit: () => ipcRenderer.invoke('app:quit'),
+    minimize: () => ipcRenderer.invoke('window:minimize'),
+    toggleMaximize: () => ipcRenderer.invoke('window:toggle-maximize'),
+    close: () => ipcRenderer.invoke('window:close'),
+  },
+  bootstrap: () => ipcRenderer.invoke('app:bootstrap'),
+  dictation: {
+    start: (options) => ipcRenderer.invoke('dictation:start', options),
+    stop: () => ipcRenderer.invoke('dictation:stop'),
+    cancel: () => ipcRenderer.invoke('dictation:cancel'),
+    copy: (text) => ipcRenderer.invoke('dictation:copy', text),
+    sendToScratchpad: (text) => ipcRenderer.invoke('dictation:scratchpad', text),
+  },
+  audio: {
+    submit: (payload) => ipcRenderer.invoke('audio:submit', payload),
+    reportLevel: (sessionId, level) => ipcRenderer.send('audio:level', { sessionId, level }),
+    reportError: (sessionId, message) => ipcRenderer.send('audio:error', { sessionId, message }),
+  },
+  settings: {
+    save: (patch: Partial<PublicSettings>) => ipcRenderer.invoke('settings:save', patch),
+    setShortcutRecording: (recording: boolean) => ipcRenderer.invoke('settings:shortcut-recording', recording),
+    setGroqKey: (value) => ipcRenderer.invoke('settings:set-key', value),
+    clearGroqKey: () => ipcRenderer.invoke('settings:clear-key'),
+  },
+  history: {
+    delete: (id) => ipcRenderer.invoke('history:delete', id),
+    toggleFavorite: (id) => ipcRenderer.invoke('history:favorite', id),
+    copy: (id) => ipcRenderer.invoke('history:copy', id),
+  },
+  dictionary: {
+    save: (entry) => ipcRenderer.invoke('dictionary:save', entry),
+    delete: (id) => ipcRenderer.invoke('dictionary:delete', id),
+  },
+  snippets: {
+    save: (snippet) => ipcRenderer.invoke('snippets:save', snippet),
+    delete: (id) => ipcRenderer.invoke('snippets:delete', id),
+  },
+  transforms: {
+    save: (transform) => ipcRenderer.invoke('transforms:save', transform),
+    delete: (id) => ipcRenderer.invoke('transforms:delete', id),
+  },
+  scratchpad: {
+    read: () => ipcRenderer.invoke('scratchpad:read'),
+    save: (value) => ipcRenderer.invoke('scratchpad:save', value),
+  },
+  on,
+}
+
+contextBridge.exposeInMainWorld('flowerWhisp', api)
