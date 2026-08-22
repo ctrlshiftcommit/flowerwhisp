@@ -1,7 +1,11 @@
 node_modules/
 dist/
 release/
+release-*/
 artifacts/
+*.exe
+*.blockmap
+builder-debug.yml
 .vite/
 *.log
 .env
