@@ -69,22 +69,52 @@ public static class FlowerWhispPasteInput {
   }
 
   [DllImport("user32.dll")]
-  private static extern bool ShowWindowAsync(IntPtr hWnd, int command);
-
-  [DllImport("user32.dll")]
   private static extern bool SetForegroundWindow(IntPtr hWnd);
 
   [DllImport("user32.dll")]
+  private static extern bool BringWindowToTop(IntPtr hWnd);
+
+  [DllImport("user32.dll")]
   private static extern IntPtr GetForegroundWindow();
+
+  [DllImport("user32.dll")]
+  private static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr processId);
+
+  [DllImport("kernel32.dll")]
+  private static extern uint GetCurrentThreadId();
+
+  [DllImport("user32.dll")]
+  private static extern bool AttachThreadInput(uint attachThreadId, uint attachToThreadId, bool attach);
+
+  [DllImport("user32.dll")]
+  private static extern bool IsIconic(IntPtr hWnd);
+
+  [DllImport("user32.dll")]
+  private static extern bool ShowWindowAsync(IntPtr hWnd, int command);
 
   [DllImport("user32.dll", SetLastError = true)]
   private static extern uint SendInput(uint numberOfInputs, INPUT[] inputs, int sizeOfInput);
 
   public static bool Paste(IntPtr target) {
-    ShowWindowAsync(target, 9);
     if (GetForegroundWindow() != target) {
-      SetForegroundWindow(target);
-      System.Threading.Thread.Sleep(75);
+      var targetThread = GetWindowThreadProcessId(target, IntPtr.Zero);
+      var currentThread = GetCurrentThreadId();
+      var attached = targetThread != 0 && currentThread != targetThread && AttachThreadInput(currentThread, targetThread, true);
+      try {
+        // Restore only a minimized target. SW_RESTORE would also take a
+        // maximized window back to its normal size, which is not acceptable.
+        if (IsIconic(target)) ShowWindowAsync(target, 9);
+        BringWindowToTop(target);
+        SetForegroundWindow(target);
+        System.Threading.Thread.Sleep(75);
+        if (GetForegroundWindow() != target) {
+          BringWindowToTop(target);
+          SetForegroundWindow(target);
+          System.Threading.Thread.Sleep(75);
+        }
+      } finally {
+        if (attached) AttachThreadInput(currentThread, targetThread, false);
+      }
     }
     if (GetForegroundWindow() != target) return false;
     var inputs = new INPUT[] {

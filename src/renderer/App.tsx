@@ -39,7 +39,6 @@ import {
   Trash,
   UserCircle,
   UsersThree,
-  Waveform,
   X,
 } from '@phosphor-icons/react'
 import type { Icon as PhosphorIcon } from '@phosphor-icons/react'
@@ -543,7 +542,7 @@ const PillGraph = ({ level = 0, elapsedMs = 0 }: { level?: number; elapsedMs?: n
     return () => window.cancelAnimationFrame(raf)
   }, [])
 
-  return <div className="pill-visualizer" aria-label={frame.level > 0.03 ? 'Live microphone level' : 'Microphone waiting'}><div className="pill-graph" aria-hidden="true">{Array.from({ length: 12 }, (_, index) => { const envelope = 0.2 + Math.pow(Math.abs(Math.sin(index * 0.72 + frame.phase)), 1.6) * 0.8; const height = 3 + frame.level * envelope * 17; return <span key={index} style={{ height: `${height.toFixed(2)}px`, opacity: `${0.56 + Math.min(0.44, frame.level * envelope)}` }} /> })}</div><span className="pill-time">{formatDuration(elapsedMs)}</span></div>
+  return <div className="pill-visualizer" aria-label={frame.level > 0.03 ? 'Live microphone level' : 'Microphone waiting'}><div className="pill-graph" aria-hidden="true">{Array.from({ length: 12 }, (_, index) => { const envelope = 0.32 + Math.pow(Math.abs(Math.sin(index * 0.72 + frame.phase)), 1.45) * 0.68; const breathingFloor = 0.14 + Math.abs(Math.sin(index * 0.54 + frame.phase * 1.8)) * 0.12; const visibleLevel = Math.min(1, Math.max(breathingFloor, frame.level * 1.55)); const height = 4 + visibleLevel * envelope * 23; return <span key={index} style={{ height: `${height.toFixed(2)}px`, opacity: `${0.72 + Math.min(0.28, visibleLevel * envelope)}`, animationDelay: `${index * -65}ms` }} /> })}</div><span className="pill-time">{formatDuration(elapsedMs)}</span></div>
 }
 
 const Notice = ({ message, tone, onDismiss }: { message: string; tone: 'success' | 'error' | 'neutral'; onDismiss: () => void }) => (
@@ -559,7 +558,7 @@ const Sidebar = ({ page, setPage }: { page: PageId; setPage: (page: PageId) => v
   <aside className="sidebar">
     <div className="brand-lockup">
       <div className="brand-mark" aria-hidden="true">
-        <Waveform size={21} weight="bold" />
+        <img className="brand-mark-image" src="./flowerwhisp.png" alt="" />
       </div>
       <div className="brand-name">Flow</div>
     </div>
@@ -1097,9 +1096,28 @@ const OverlayPill = ({ overlay }: { overlay: OverlayState }) => {
   const ready = overlay.phase === 'ready'
   const error = overlay.phase === 'error'
   const resting = ['idle', 'success', 'cancelled'].includes(overlay.phase)
+  const [clockNow, setClockNow] = useState(() => Date.now())
+  const timerStart = useRef<{ sessionId: string; startedAt: number } | null>(null)
+
+  useEffect(() => {
+    if (!busy || !overlay.sessionId) {
+      timerStart.current = null
+      return undefined
+    }
+    if (timerStart.current?.sessionId !== overlay.sessionId) {
+      timerStart.current = { sessionId: overlay.sessionId, startedAt: Date.now() - overlay.elapsedMs }
+    }
+    const timer = window.setInterval(() => setClockNow(Date.now()), 100)
+    return () => window.clearInterval(timer)
+  }, [busy, overlay.sessionId])
+
+  const liveElapsedMs = busy && timerStart.current?.sessionId === overlay.sessionId
+    ? Math.max(overlay.elapsedMs, clockNow - timerStart.current.startedAt)
+    : overlay.elapsedMs
+
   if (resting) return <div className="overlay-root is-resting" role="status" aria-label="Flow is ready"><span className="overlay-idle-mark" /></div>
   const stateLabel = `${phaseLabel[overlay.phase]}${overlay.message ? `: ${overlay.message}` : ''}`
-  return <div className={`overlay-root ${busy ? 'is-busy' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`}><div className={`overlay-pill ${recording ? 'is-recording' : ''} ${processing ? 'is-processing' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`} aria-label={stateLabel} aria-live="polite" data-phase={overlay.phase}><span className="sr-only">{stateLabel}</span><div className="overlay-copy"><div className="overlay-state"><span className={`overlay-dot ${busy ? 'is-live' : ''}`} /><span className="overlay-label">{phaseLabel[overlay.phase]}</span><span className="overlay-mode">{overlay.mode === 'hold' ? 'hold' : 'toggle'}</span><span className="overlay-time">{formatDuration(overlay.elapsedMs)}</span></div><p>{overlay.message}</p></div>{busy ? <IconButton label="Cancel dictation" icon={X} onClick={() => void api.dictation.cancel()} /> : null}{recording ? <PillGraph level={overlay.level} elapsedMs={overlay.elapsedMs} /> : null}{processing ? <span className="overlay-processing" aria-label="Processing" /> : null}{recording && overlay.mode === 'toggle' ? <IconButton label="Finish dictation" icon={Check} onClick={() => void api.dictation.stop()} /> : null}{ready ? <><IconButton label="Copy transcript" icon={Copy} onClick={() => void api.dictation.copy(overlay.result)} /><IconButton label="Send transcript to Scratchpad" icon={NotePencil} onClick={() => void api.dictation.sendToScratchpad(overlay.result)} /></> : null}{error ? <IconButton label="Dismiss error" icon={X} onClick={() => void api.dictation.cancel()} /> : null}</div></div>
+  return <div className={`overlay-root ${busy ? 'is-busy' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`}><div className={`overlay-pill ${recording ? 'is-recording' : ''} ${processing ? 'is-processing' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`} aria-label={stateLabel} aria-live="polite" data-phase={overlay.phase}><span className="sr-only">{stateLabel}</span><div className="overlay-copy"><div className="overlay-state"><span className={`overlay-dot ${busy ? 'is-live' : ''}`} /><span className="overlay-label">{phaseLabel[overlay.phase]}</span><span className="overlay-mode">{overlay.mode === 'hold' ? 'hold' : 'toggle'}</span><span className="overlay-time">{formatDuration(liveElapsedMs)}</span></div><p>{overlay.message}</p></div>{busy ? <IconButton label="Cancel dictation" icon={X} onClick={() => void api.dictation.cancel()} /> : null}{recording ? <PillGraph level={overlay.level} elapsedMs={liveElapsedMs} /> : null}{processing ? <span className="overlay-processing" aria-label="Processing" /> : null}{recording && overlay.mode === 'toggle' ? <IconButton label="Finish dictation" icon={Check} onClick={() => void api.dictation.stop()} /> : null}{ready ? <><IconButton label="Copy transcript" icon={Copy} onClick={() => void api.dictation.copy(overlay.result)} /><IconButton label="Send transcript to Scratchpad" icon={NotePencil} onClick={() => void api.dictation.sendToScratchpad(overlay.result)} /></> : null}{error ? <IconButton label="Dismiss error" icon={X} onClick={() => void api.dictation.cancel()} /> : null}</div></div>
 }
 
 export function App() {
@@ -1109,7 +1127,7 @@ export function App() {
   const [overlay, setOverlay] = useState<OverlayState>(emptyOverlay)
   const [themePreview, setThemePreview] = useState<PublicSettings['theme'] | null>(null)
   const [notice, setNotice] = useState<{ message: string; tone: 'success' | 'error' | 'neutral' } | null>(null)
-  const captureRef = useRef<{ sessionId: string; recorder: MediaRecorder; stream: MediaStream; chunks: Blob[]; startedAt: number; audioContext: AudioContext | null; raf: number | null; cancelled: boolean } | null>(null)
+  const captureRef = useRef<{ sessionId: string; recorder: MediaRecorder; stream: MediaStream; chunks: Blob[]; startedAt: number; audioContext: AudioContext | null; levelTimer: number | null; cancelled: boolean } | null>(null)
 
   useEffect(() => {
     document.title = 'Flow'
@@ -1159,7 +1177,7 @@ export function App() {
     const capture = captureRef.current
     if (!capture) return
     capture.stream.getTracks().forEach((track) => track.stop())
-    if (capture.raf !== null) window.cancelAnimationFrame(capture.raf)
+    if (capture.levelTimer !== null) window.clearInterval(capture.levelTimer)
     void capture.audioContext?.close()
     captureRef.current = null
   }, [])
@@ -1174,7 +1192,7 @@ export function App() {
       const mimeType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg'].find((type) => MediaRecorder.isTypeSupported(type))
       if (!mimeType) throw new Error('This runtime does not support an audio recording format.')
       const recorder = new MediaRecorder(stream, { mimeType })
-      const capture = { sessionId: candidate.sessionId, recorder, stream, chunks: [] as Blob[], startedAt: Date.now(), audioContext: null as AudioContext | null, raf: null as number | null, cancelled: false }
+      const capture = { sessionId: candidate.sessionId, recorder, stream, chunks: [] as Blob[], startedAt: Date.now(), audioContext: null as AudioContext | null, levelTimer: null as number | null, cancelled: false }
       captureRef.current = capture
       recorder.ondataavailable = (event) => { if (event.data.size > 0) capture.chunks.push(event.data) }
       recorder.onstop = () => {
@@ -1195,8 +1213,9 @@ export function App() {
       analyser.fftSize = 256
       audioContext.createMediaStreamSource(stream).connect(analyser)
       const samples = new Uint8Array(analyser.fftSize)
-      const tick = () => { if (!captureRef.current || captureRef.current.sessionId !== capture.sessionId) return; analyser.getByteTimeDomainData(samples); let sum = 0; for (const sample of samples) { const normalized = (sample - 128) / 128; sum += normalized * normalized } api.audio.reportLevel(capture.sessionId, Math.min(1, Math.sqrt(sum / samples.length) * 3.8)); capture.raf = window.requestAnimationFrame(tick) }
-      capture.raf = window.requestAnimationFrame(tick)
+      const tick = () => { if (!captureRef.current || captureRef.current.sessionId !== capture.sessionId) return; analyser.getByteTimeDomainData(samples); let sum = 0; for (const sample of samples) { const normalized = (sample - 128) / 128; sum += normalized * normalized } api.audio.reportLevel(capture.sessionId, Math.min(1, Math.sqrt(sum / samples.length) * 3.8)) }
+      tick()
+      capture.levelTimer = window.setInterval(tick, 80)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Microphone permission was denied.'
       api.audio.reportError(candidate.sessionId, message)

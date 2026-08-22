@@ -52,6 +52,7 @@
     },
     "files": [
       "dist/**/*",
+      "assets/**/*",
       "package.json"
     ],
     "asar": true,
@@ -65,7 +66,8 @@
           "target": "portable",
           "arch": ["x64"]
         }
-      ]
+      ],
+      "icon": "assets/flowerwhisp.png"
     },
     "nsis": {
       "oneClick": false,
@@ -74,6 +76,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "FlowerWhisp",
+      "installerIcon": "assets/flowerwhisp.png",
+      "uninstallerIcon": "assets/flowerwhisp.png",
       "artifactName": "FlowerWhisp-${version}-Setup.${ext}"
     },
     "portable": {

@@ -36,6 +36,9 @@ import { JsonStateStore, type AppSnapshot } from './services/store'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const rendererPath = path.join(__dirname, '../renderer/index.html')
 const preloadPath = path.join(__dirname, '../preload/preload.cjs')
+const productName = 'FlowerWhisp'
+const appUserModelId = 'com.flowerwhisp.desktop'
+const appIconPath = path.join(__dirname, '../../assets/flowerwhisp.png')
 const isSmoke = process.env.FLOWERWHISP_SMOKE === '1'
 const devUrl = process.env.FLOWERWHISP_DEV_URL
 
@@ -47,7 +50,8 @@ if (isSmoke) {
   app.commandLine.appendSwitch('disable-gpu')
   app.disableHardwareAcceleration()
 }
-app.setName('FlowerWhisp')
+app.setName(productName)
+app.setAppUserModelId(appUserModelId)
 
 let mainWindow: BrowserWindow | null = null
 let overlayWindow: BrowserWindow | null = null
@@ -88,12 +92,10 @@ const defaultOverlay = (): OverlayState => ({
 })
 
 let overlayState = defaultOverlay()
-
-const traySvg = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><rect x="2" y="2" width="28" height="28" rx="9" fill="#1f1d1a"/><path d="M10 16c3-5 5-5 6 0s3 5 6 0" fill="none" stroke="#d6c7ff" stroke-width="2.2" stroke-linecap="round"/></svg>`
+let elapsedTicker: NodeJS.Timeout | null = null
 
 const makeTrayImage = () => {
-  const data = `data:image/svg+xml;base64,${Buffer.from(traySvg).toString('base64')}`
-  return nativeImage.createFromDataURL(data).resize({ width: 16, height: 16 })
+  return nativeImage.createFromPath(appIconPath).resize({ width: 16, height: 16 })
 }
 
 const isTrustedSender = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent): boolean => {
@@ -106,6 +108,26 @@ const result = (ok: boolean, message?: string, error?: string): CommandResult =>
 const send = (channel: AppEventChannel, payload: unknown): void => {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload)
   if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.webContents.send(channel, payload)
+}
+
+const stopElapsedTicker = (): void => {
+  if (!elapsedTicker) return
+  clearInterval(elapsedTicker)
+  elapsedTicker = null
+}
+
+const startElapsedTicker = (): void => {
+  stopElapsedTicker()
+  elapsedTicker = setInterval(() => {
+    const session = activeSession
+    if (!session) {
+      stopElapsedTicker()
+      return
+    }
+    const elapsedMs = Date.now() - session.startedAt
+    overlayState = { ...overlayState, elapsedMs }
+    send('overlay:level', { sessionId: session.id, level: overlayState.level, elapsedMs })
+  }, 100)
 }
 
 const publishOverlay = (patch: Partial<OverlayState>): void => {
@@ -172,6 +194,7 @@ const createWindows = (): void => {
     minHeight: 680,
     show: !isSmoke,
     title: 'Flow',
+    icon: appIconPath,
     frame: false,
     backgroundColor: windowBackgroundColor(),
     webPreferences: {
@@ -204,6 +227,7 @@ const createWindows = (): void => {
     alwaysOnTop: true,
     hasShadow: false,
     focusable: false,
+    icon: appIconPath,
     backgroundColor: '#00000000',
     webPreferences: {
       preload: preloadPath,
@@ -328,7 +352,10 @@ const setShortcutRecording = async (recording: boolean): Promise<CommandResult> 
 }
 
 const startSession = async (mode: DictationMode): Promise<CommandResult> => {
-  if (activeSession && ['ready', 'success', 'error', 'cancelled'].includes(activeSession.phase)) activeSession = null
+  if (activeSession && ['ready', 'success', 'error', 'cancelled'].includes(activeSession.phase)) {
+    stopElapsedTicker()
+    activeSession = null
+  }
   if (activeSession) return result(false, undefined, 'A dictation is already in progress.')
   const settings = (await getSnapshot()).settings
   activeSession = { id: randomUUID(), mode, startedAt: Date.now(), phase: 'starting', result: '', recordId: null }
@@ -346,6 +373,7 @@ const startSession = async (mode: DictationMode): Promise<CommandResult> => {
     cleanupLevel: settings.cleanupLevel,
     copyAvailable: false,
   })
+  startElapsedTicker()
   if (settings.showPill) showOverlay()
   mainWindow?.webContents.send('recording:start', { sessionId: activeSession.id, mode })
   advance('recording', { message: mode === 'hold' ? 'Hold mode is local to the app without a native key-up hook.' : 'Speak naturally, then press the shortcut again.' })
@@ -364,6 +392,7 @@ const cancelSession = async (): Promise<CommandResult> => {
   if (!activeSession) return result(false, undefined, 'There is no active dictation.')
   const sessionId = activeSession.id
   mainWindow?.webContents.send('recording:cancel', { sessionId })
+  stopElapsedTicker()
   activeSession = null
   publishOverlay({ ...defaultOverlay(), phase: 'cancelled', message: 'Dictation cancelled.' })
   hideOverlay(450)
@@ -395,6 +424,7 @@ const handleAudio = async (payload: { sessionId: string; dataUrl: string; mimeTy
     activeSession.result = processed.finalText
     activeSession.recordId = processed.record.id
     if (insertion.outcome === 'inserted') {
+      stopElapsedTicker()
       activeSession = null
       publishOverlay({
         phase: 'success',
@@ -407,6 +437,7 @@ const handleAudio = async (payload: { sessionId: string; dataUrl: string; mimeTy
       hideOverlay(1_200)
       return result(true, insertion.message)
     }
+    stopElapsedTicker()
     advance('ready', {
       message: insertion.message,
       transcript: processed.rawText,
@@ -416,6 +447,7 @@ const handleAudio = async (payload: { sessionId: string; dataUrl: string; mimeTy
     })
     return result(true, insertion.message)
   } catch (error) {
+    stopElapsedTicker()
     const message = error instanceof Error ? error.message : 'The dictation could not be processed.'
     advance('error', { message: 'The safe capture was not inserted.', error: message, copyAvailable: false })
     return result(false, undefined, message)
@@ -433,6 +465,7 @@ const copyResult = async (text: string): Promise<CommandResult> => {
       })
       notifyBootstrapChanged()
     }
+    stopElapsedTicker()
     activeSession = null
     publishOverlay({ phase: 'success', message: copied.message, copyAvailable: false })
     hideOverlay(1200)
@@ -453,6 +486,7 @@ const sendToScratchpad = async (text: string): Promise<CommandResult> => {
       if (record) record.insertionOutcome = 'scratchpad'
     }
   })
+  stopElapsedTicker()
   activeSession = null
   publishOverlay({ phase: 'success', message: 'Added to Scratchpad.', copyAvailable: false })
   hideOverlay(900)
@@ -620,6 +654,7 @@ const registerIpc = (): void => {
     const candidate = payload as Record<string, unknown>
     if (typeof candidate.sessionId !== 'string' || typeof candidate.message !== 'string') return
     if (activeSession?.id !== candidate.sessionId) return
+    stopElapsedTicker()
     activeSession = null
     publishOverlay({ phase: 'error', message: 'Microphone unavailable.', error: candidate.message, copyAvailable: false })
     hideOverlay(1500)
@@ -748,6 +783,7 @@ if (!gotLock) {
     app.quit()
   })
   app.on('will-quit', () => {
+    stopElapsedTicker()
     globalShortcut.unregisterAll()
     tray?.destroy()
   })
