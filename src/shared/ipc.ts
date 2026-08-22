@@ -67,7 +67,7 @@ export interface DictationRecord {
   style: string
   dictionaryFixCount: number
   aiFixCount: number
-  insertionOutcome: 'copied' | 'scratchpad' | 'not-attempted' | 'failed'
+  insertionOutcome: 'inserted' | 'copied' | 'scratchpad' | 'not-attempted' | 'failed'
   retention: RetentionMode
   favorite: boolean
 }
@@ -146,8 +146,8 @@ export interface BootstrapPayload {
     microphone: boolean
     cloudTranscription: boolean
     localTranscription: boolean
-    externalInsertion: false
-    appOwnedInsertion: true
+    externalInsertion: boolean
+    appOwnedInsertion: boolean
   }
   overlay: OverlayState
 }

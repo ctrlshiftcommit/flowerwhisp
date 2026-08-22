@@ -119,7 +119,7 @@ const emptyBootstrap = (): BootstrapPayload => ({
     microphone: true,
     cloudTranscription: true,
     localTranscription: false,
-    externalInsertion: false,
+    externalInsertion: true,
     appOwnedInsertion: true,
   },
   overlay: emptyOverlay,
@@ -241,7 +241,7 @@ const phaseLabel: Record<DictationPhase, string> = {
   transcribing: 'Transcribing',
   processing: 'Polishing',
   ready: 'Ready to copy',
-  inserting: 'Sending to Scratchpad',
+  inserting: 'Inserting',
   success: 'Complete',
   error: 'Needs attention',
   cancelled: 'Cancelled',
@@ -604,7 +604,7 @@ const PageHeader = ({ page }: { page: PageId }) => {
 }
 
 const CaptureBand = ({ overlay, settings, onStart, onOpenStyle, onStop, onHoldStart, onHoldStop, onCancel, onCopy, onScratchpad }: { overlay: OverlayState; settings: PublicSettings; onStart: () => void; onOpenStyle: () => void; onStop: () => void; onHoldStart: () => void; onHoldStop: () => void; onCancel: () => void; onCopy: () => void; onScratchpad: () => void }) => {
-  const active = ['starting', 'recording', 'stopping', 'transcribing', 'processing'].includes(overlay.phase)
+  const active = ['starting', 'recording', 'stopping', 'transcribing', 'processing', 'inserting'].includes(overlay.phase)
   const ready = overlay.phase === 'ready'
   const isError = overlay.phase === 'error'
   const opensStyle = !active && !ready && !isError
@@ -625,8 +625,8 @@ const CaptureBand = ({ overlay, settings, onStart, onOpenStyle, onStop, onHoldSt
         <p>
           {active
             ? overlay.message
-            : ready
-              ? 'Review the result, copy it for manual paste, or keep it in Scratchpad.'
+              : ready
+              ? 'Flow inserts the result into the active app; copy it manually if the target was unavailable, or keep it in Scratchpad.'
               : isError
                 ? overlay.error || overlay.message
                 : 'Set up different writing styles for different apps.'}
@@ -702,7 +702,7 @@ const Ledger = ({ records, onCopy, onDelete, onFavorite, onAction }: { records: 
                   <span>{record.transcriptionProvider === 'groq' ? 'Groq' : 'Local'}</span>
                   <span>{record.cleanupLevel === 'none' ? 'raw' : `${record.cleanupLevel} cleanup`}</span>
                   <span>{formatDuration(record.durationMs)}</span>
-                  <span>{record.insertionOutcome === 'copied' ? 'copied for paste' : record.insertionOutcome === 'scratchpad' ? 'sent to Scratchpad' : 'not inserted'}</span>
+                  <span>{record.insertionOutcome === 'inserted' ? 'inserted in active app' : record.insertionOutcome === 'copied' ? 'copied for paste' : record.insertionOutcome === 'scratchpad' ? 'sent to Scratchpad' : 'not inserted'}</span>
                 </div>
               </div>
               <div className="ledger-actions">
@@ -1091,9 +1091,9 @@ const Toggle = ({ label, checked, onChange }: { label: string; checked: boolean;
 const EmptyState = ({ icon: Icon, title, body, action, onAction }: { icon: NavIcon; title: string; body: string; action: string; onAction: () => void }) => <div className="empty-state"><div className="empty-glyph"><Icon size={27} /></div><div><h3>{title}</h3><p>{body}</p><Button variant="secondary" onClick={onAction}>{action}</Button></div></div>
 
 const OverlayPill = ({ overlay }: { overlay: OverlayState }) => {
-  const busy = ['starting', 'recording', 'stopping', 'transcribing', 'processing'].includes(overlay.phase)
+  const busy = ['starting', 'recording', 'stopping', 'transcribing', 'processing', 'inserting'].includes(overlay.phase)
   const recording = overlay.phase === 'recording'
-  const processing = ['starting', 'stopping', 'transcribing', 'processing'].includes(overlay.phase)
+  const processing = ['starting', 'stopping', 'transcribing', 'processing', 'inserting'].includes(overlay.phase)
   const ready = overlay.phase === 'ready'
   const error = overlay.phase === 'error'
   const resting = ['idle', 'success', 'cancelled'].includes(overlay.phase)

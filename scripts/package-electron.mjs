@@ -29,6 +29,12 @@ if (outputIsInsideRepository) {
 
 mkdirSync(outputDirectory, { recursive: true })
 
+const builderCacheDirectory = resolve(
+  process.env.ELECTRON_BUILDER_CACHE ||
+    join(process.env.TEMP || tmpdir(), "FlowerWhisp-builder-cache"),
+)
+mkdirSync(builderCacheDirectory, { recursive: true })
+
 const builderCommand = resolve(
   repoRoot,
   "node_modules",
@@ -46,6 +52,10 @@ console.log(`Packaging FlowerWhisp to: ${outputDirectory}`)
 
 const result = spawnSync(builderCommand, builderArguments, {
   cwd: repoRoot,
+  env: {
+    ...process.env,
+    ELECTRON_BUILDER_CACHE: builderCacheDirectory,
+  },
   stdio: "inherit",
   shell: process.platform === "win32",
 })

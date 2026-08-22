@@ -29,7 +29,7 @@ import type {
 import type { DictationRecord, DictionaryEntry, Snippet, TransformProfile } from '../shared/ipc'
 import { isValidShortcut } from '../shared/shortcuts'
 import { DictationPipeline } from './services/pipeline'
-import { copyForManualPaste } from './services/insertion'
+import { captureInsertionTarget, copyForManualPaste, insertAtTarget, type InsertionTarget } from './services/insertion'
 import { SecretStore } from './services/secrets'
 import { JsonStateStore, type AppSnapshot } from './services/store'
 
@@ -247,7 +247,7 @@ const buildBootstrap = async (): Promise<BootstrapPayload> => {
       microphone: true,
       cloudTranscription: true,
       localTranscription: Boolean(snapshot.settings.localCommand),
-      externalInsertion: false,
+      externalInsertion: true,
       appOwnedInsertion: true,
     },
     overlay: overlayState,
@@ -255,6 +255,21 @@ const buildBootstrap = async (): Promise<BootstrapPayload> => {
 }
 
 const notifyBootstrapChanged = (): void => send('toast', { kind: 'refresh' })
+
+const nativeWindowHandle = (window: BrowserWindow | null): string | null => {
+  if (!window || window.isDestroyed() || process.platform !== 'win32') return null
+  const handle = window.getNativeWindowHandle()
+  if (handle.length >= 8) return handle.readBigUInt64LE(0).toString()
+  if (handle.length >= 4) return handle.readUInt32LE(0).toString()
+  return null
+}
+
+const captureExternalInsertionTarget = (): InsertionTarget | null => {
+  const target = captureInsertionTarget()
+  if (!target) return null
+  const ownedHandles = new Set([nativeWindowHandle(mainWindow), nativeWindowHandle(overlayWindow)].filter((handle): handle is string => Boolean(handle)))
+  return ownedHandles.has(target.handle) ? null : target
+}
 
 const shortcutHandler = (): void => {
   if (activeSession) void stopSession()
@@ -367,16 +382,39 @@ const handleAudio = async (payload: { sessionId: string; dataUrl: string; mimeTy
     const settings = (await getSnapshot()).settings
     advance('processing', { message: settings.cleanupLevel === 'none' ? 'Applying dictionary corrections…' : 'Applying the selected cleanup…' })
     const processed = await pipeline.run({ audio: { bytes, mimeType: payload.mimeType, durationMs: payload.durationMs }, settings })
+    const startedAt = activeSession.startedAt
+    advance('inserting', { message: 'Inserting transcript into the active application…' })
+    // Resolve the destination only when the transcript is ready. The user may
+    // have moved the cursor or switched apps while transcription was running.
+    const insertion = insertAtTarget(processed.finalText, captureExternalInsertionTarget())
+    await store.update((snapshot) => {
+      const record = snapshot.records.find((candidate) => candidate.id === processed.record.id)
+      if (record) record.insertionOutcome = insertion.outcome
+    })
+    notifyBootstrapChanged()
     activeSession.result = processed.finalText
     activeSession.recordId = processed.record.id
+    if (insertion.outcome === 'inserted') {
+      activeSession = null
+      publishOverlay({
+        phase: 'success',
+        message: insertion.message,
+        transcript: processed.rawText,
+        result: processed.finalText,
+        copyAvailable: false,
+        elapsedMs: Date.now() - startedAt,
+      })
+      hideOverlay(1_200)
+      return result(true, insertion.message)
+    }
     advance('ready', {
-      message: 'Transcript ready. Copy it or send it to Scratchpad.',
+      message: insertion.message,
       transcript: processed.rawText,
       result: processed.finalText,
       copyAvailable: true,
       elapsedMs: Date.now() - activeSession.startedAt,
     })
-    return result(true, 'Transcript ready.')
+    return result(true, insertion.message)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'The dictation could not be processed.'
     advance('error', { message: 'The safe capture was not inserted.', error: message, copyAvailable: false })
