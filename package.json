@@ -17,7 +17,10 @@
     "build:renderer": "vite build",
     "build": "npm run typecheck && npm run build:main && npm run build:preload && npm run build:renderer",
     "start": "npm run build && electron .",
-    "package": "npm run build && electron-builder --win portable",
+    "package": "npm run build && node scripts/package-electron.mjs",
+    "package:installer": "npm run build && node scripts/package-electron.mjs nsis",
+    "package:portable": "npm run build && node scripts/package-electron.mjs portable",
+    "package:dir": "npm run build && node scripts/package-electron.mjs dir",
     "smoke": "node scripts/electron-smoke.mjs"
   },
   "dependencies": {
@@ -55,10 +58,26 @@
     "win": {
       "target": [
         {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
           "target": "portable",
           "arch": ["x64"]
         }
       ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "FlowerWhisp",
+      "artifactName": "FlowerWhisp-${version}-Setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "FlowerWhisp-${version}-Portable.${ext}"
     }
   }
 }

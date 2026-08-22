@@ -170,7 +170,7 @@ const createWindows = (): void => {
     height: 820,
     minWidth: 1040,
     minHeight: 680,
-    show: false,
+    show: !isSmoke,
     title: 'Flow',
     frame: false,
     backgroundColor: windowBackgroundColor(),
