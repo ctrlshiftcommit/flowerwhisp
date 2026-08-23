@@ -35,6 +35,7 @@ export interface PublicSettings {
   cleanupLevel: CleanupLevel
   cleanupPrompts: Record<CleanupLevel, string>
   defaultStyle: string
+  holdShortcut: string
   toggleShortcut: string
   microphoneLabel: string
   localCommand: string
@@ -143,6 +144,8 @@ export interface BootstrapPayload {
   usage: UsageDay[]
   scratchpad: string
   hasGroqKey: boolean
+  holdShortcutRegistered: boolean
+  registeredHoldShortcut: string
   shortcutRegistered: boolean
   registeredShortcut: string
   capabilities: {

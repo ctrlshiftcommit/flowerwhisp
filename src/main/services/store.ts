@@ -11,7 +11,7 @@ import type {
   TransformProfile,
   UsageDay,
 } from '../../shared/ipc'
-import { DEFAULT_TOGGLE_SHORTCUT, isValidShortcut } from '../../shared/shortcuts'
+import { DEFAULT_HOLD_SHORTCUT, DEFAULT_TOGGLE_SHORTCUT, isValidHoldShortcut, isValidShortcut } from '../../shared/shortcuts'
 import { DEFAULT_CLEANUP_PROMPTS } from '../../shared/promptDefaults'
 
 export interface AppSnapshot {
@@ -35,8 +35,9 @@ export const defaultSettings: PublicSettings = {
   cleanupLevel: 'light',
   cleanupPrompts: { ...DEFAULT_CLEANUP_PROMPTS },
   defaultStyle: 'personal-casual',
-  // Keep the first-run accelerator on the stable Ctrl/Shift path. The exact
-  // configured value is the only global dictation shortcut we register.
+  // Hold and toggle are deliberately separate: hold needs native key-up
+  // delivery, while toggle is a one-shot accelerator pressed a second time.
+  holdShortcut: DEFAULT_HOLD_SHORTCUT,
   toggleShortcut: DEFAULT_TOGGLE_SHORTCUT,
   microphoneLabel: 'System default microphone',
   localCommand: '',
@@ -137,6 +138,7 @@ export class JsonStateStore {
         settings: {
           ...mergedSettings,
           cleanupPrompts,
+          holdShortcut: isValidHoldShortcut(mergedSettings.holdShortcut) ? mergedSettings.holdShortcut : defaults.settings.holdShortcut,
           toggleShortcut: isValidShortcut(mergedSettings.toggleShortcut) ? mergedSettings.toggleShortcut : defaults.settings.toggleShortcut,
         },
         records: Array.isArray(parsed.records) ? parsed.records : [],

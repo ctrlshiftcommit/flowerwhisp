@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isValidShortcut, shortcutFromEvent } from './shortcuts'
+import { isValidHoldShortcut, isValidShortcut, shortcutFromEvent } from './shortcuts'
 
 describe('isValidShortcut', () => {
   it('accepts common toggle accelerators with a modifier and key', () => {
@@ -15,7 +15,7 @@ describe('isValidShortcut', () => {
     expect(isValidShortcut('F1')).toBe(false)
   })
 
-  it('rejects modifier-only values for every configurable shortcut', () => {
+  it('keeps modifier-only values out of the toggle shortcut', () => {
     expect(isValidShortcut('Control+Super')).toBe(false)
     expect(isValidShortcut('Control')).toBe(false)
     expect(isValidShortcut('A+B')).toBe(false)
@@ -38,5 +38,22 @@ describe('isValidShortcut', () => {
     expect(isValidShortcut('Control+Control+Space')).toBe(false)
     expect(isValidShortcut('Control+A+B')).toBe(false)
     expect(isValidShortcut('Control+Super+NotAKey')).toBe(false)
+  })
+})
+
+describe('isValidHoldShortcut', () => {
+  it('accepts modifier-only holds, full chords, and hardware function keys', () => {
+    expect(isValidHoldShortcut('Control+Super')).toBe(true)
+    expect(isValidHoldShortcut('Control')).toBe(true)
+    expect(isValidHoldShortcut('Control+Shift+Tab')).toBe(true)
+    expect(isValidHoldShortcut('F23')).toBe(true)
+    expect(isValidHoldShortcut('F8')).toBe(true)
+  })
+
+  it('rejects ambiguous and unmodified ordinary keys', () => {
+    expect(isValidHoldShortcut('A')).toBe(false)
+    expect(isValidHoldShortcut('Tab')).toBe(false)
+    expect(isValidHoldShortcut('Control+Control')).toBe(false)
+    expect(isValidHoldShortcut('Control+A+B')).toBe(false)
   })
 })

@@ -33,7 +33,7 @@ import type {
   PublicSettings,
 } from '../shared/ipc'
 import type { DictationRecord, DictionaryEntry, Snippet, TransformProfile } from '../shared/ipc'
-import { isValidShortcut } from '../shared/shortcuts'
+import { isValidHoldShortcut, isValidShortcut } from '../shared/shortcuts'
 import { DictationPipeline } from './services/pipeline'
 import { captureInsertionTarget, copyForManualPaste, insertAtTarget, type InsertionTarget } from './services/insertion'
 import { SecretStore } from './services/secrets'
@@ -70,16 +70,27 @@ let secrets: SecretStore
 let pipeline: DictationPipeline
 let registeredShortcut = ''
 let shortcutRegistered = false
+let registeredHoldShortcut = ''
+let holdShortcutRegistered = false
 let shortcutRecording = false
 let lastShortcutTriggerAt = 0
 let shortcutStartInFlight = false
+let shortcutStartMode: DictationMode | null = null
 let stopRequestedWhileShortcutStarts = false
+let promoteHoldToToggleWhileStarting = false
+let pendingHoldReleaseTimer: NodeJS.Timeout | null = null
 type ShortcutHookProcess = ChildProcessByStdio<null, Readable, Readable>
 
 let shortcutHookProcess: ShortcutHookProcess | null = null
 let shortcutHookShortcut = ''
+let holdShortcutHookProcess: ShortcutHookProcess | null = null
+let holdShortcutHookShortcut = ''
 let shortcutRecordHookProcess: ShortcutHookProcess | null = null
 let shortcutRegistrationError = 'That shortcut is unavailable or already claimed by another app.'
+let holdShortcutRegistrationError = 'The hold shortcut could not be installed.'
+let lastShortcutRegistrationError = ''
+let shortcutSettingsBeforeRecording: Pick<PublicSettings, 'holdShortcut' | 'toggleShortcut'> | null = null
+let shortcutInitialization: Promise<boolean> | null = null
 let allowQuit = false
 let pillEnabled = true
 let recordingsDirectory = ''
@@ -194,7 +205,9 @@ const showOverlay = (): void => {
     Math.round(bounds.x + (bounds.width - width) / 2),
     Math.max(bounds.y + 12, bounds.y + bounds.height - height - 12),
   )
+  overlayWindow.setAlwaysOnTop(true, 'screen-saver')
   overlayWindow.showInactive()
+  overlayWindow.moveTop()
 }
 
 const hideOverlay = (delayMs = 0): void => {
@@ -257,12 +270,13 @@ const createWindows = (): void => {
     mainWindow = null
   })
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (!shortcutRecording || input.type !== 'keyDown' || shortcutRecordHookProcess) return
+    if (!shortcutRecording || !['keyDown', 'keyUp'].includes(input.type) || shortcutRecordHookProcess) return
     // Keep Windows and Copilot key presses out of the page and capture them
     // before Chromium turns Win into a shell action or drops the key name.
     event.preventDefault()
     if (input.isAutoRepeat) return
     send('shortcut:record', {
+      type: input.type === 'keyUp' ? 'keyup' : 'keydown',
       key: input.key,
       code: input.code,
       ctrlKey: input.control,
@@ -297,6 +311,7 @@ const createWindows = (): void => {
   overlayWindow.on('closed', () => {
     overlayWindow = null
   })
+  overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
 
   // The real Flow indicator is mounted even while idle. Its renderer decides
   // whether that mount is a nearly invisible marker or an active control. Wait
@@ -332,6 +347,8 @@ const buildBootstrap = async (): Promise<BootstrapPayload> => {
     usage: snapshot.usage,
     scratchpad: snapshot.scratchpad,
     hasGroqKey: await secrets.hasGroqKey(),
+    holdShortcutRegistered,
+    registeredHoldShortcut,
     shortcutRegistered,
     registeredShortcut,
     capabilities: {
@@ -365,9 +382,9 @@ const captureExternalInsertionTarget = (): InsertionTarget | null => {
 // Windows reserves Win+Space for keyboard-layout switching. Electron's
 // globalShortcut correctly reports that accelerator as unavailable even when
 // it is combined with Ctrl. Keep the normal native registration for ordinary
-// accelerators, and use a small low-level hook only for that reserved family
-// so Ctrl+Win+Space remains a real configurable shortcut instead of a value
-// that merely looks valid in the settings UI.
+// accelerators, and use a small low-level hook for that reserved family and
+// for an overlapping push-to-talk/hands-free pair. This keeps Ctrl+Win+Space
+// real while allowing Ctrl+Win to remain its hold-to-dictate prefix.
 const windowsShortcutHookScript = String.raw`
 Add-Type -TypeDefinition @'
 using System;
@@ -436,6 +453,7 @@ public static class FlowerWhispKeyboardHook {
   private static extern IntPtr DispatchMessage(ref MSG message);
 
   private static readonly HashSet<uint> Down = new HashSet<uint>();
+  private static readonly HashSet<uint> Suppressed = new HashSet<uint>();
   private static LowLevelKeyboardProc callback;
   private static IntPtr hook;
   private static uint finalKey;
@@ -443,6 +461,7 @@ public static class FlowerWhispKeyboardHook {
   private static bool wantShift;
   private static bool wantAlt;
   private static bool wantWin;
+  private static bool holdActive;
 
   private static uint KeyCode(string part) {
     if (part == "Space") return 0x20;
@@ -461,6 +480,13 @@ public static class FlowerWhispKeyboardHook {
     if (part == "Left") return 0x25;
     if (part == "Right") return 0x27;
     if (part == "PrintScreen") return 0x2C;
+    if (part == "VolumeUp") return 0xAF;
+    if (part == "VolumeDown") return 0xAE;
+    if (part == "VolumeMute") return 0xAD;
+    if (part == "MediaPlayPause") return 0xB3;
+    if (part == "MediaNextTrack") return 0xB0;
+    if (part == "MediaPreviousTrack") return 0xB1;
+    if (part == "MediaStop") return 0xB2;
     if (part.Length == 1 && ((part[0] >= 'A' && part[0] <= 'Z') || (part[0] >= '0' && part[0] <= '9'))) return part[0];
     int functionNumber;
     if (part.StartsWith("F", StringComparison.Ordinal) && Int32.TryParse(part.Substring(1), out functionNumber) && functionNumber >= 1 && functionNumber <= 24) return (uint)(0x6F + functionNumber);
@@ -470,10 +496,29 @@ public static class FlowerWhispKeyboardHook {
   private static bool IsDown(uint left, uint right) { return Down.Contains(left) || Down.Contains(right); }
 
   private static bool MatchesModifiers() {
-    return (!wantControl || IsDown(VK_LCONTROL, VK_RCONTROL))
-      && (!wantShift || IsDown(VK_LSHIFT, VK_RSHIFT))
-      && (!wantAlt || IsDown(VK_LMENU, VK_RMENU))
-      && (!wantWin || IsDown(VK_LWIN, VK_RWIN));
+    return wantControl == IsDown(VK_LCONTROL, VK_RCONTROL)
+      && wantShift == IsDown(VK_LSHIFT, VK_RSHIFT)
+      && wantAlt == IsDown(VK_LMENU, VK_RMENU)
+      && wantWin == IsDown(VK_LWIN, VK_RWIN);
+  }
+
+  private static bool IsFinalKey(uint vkCode) {
+    // Windows exposes the Copilot key as LaunchApplication1 even though the
+    // renderer and Electron accelerator vocabulary call it F23.
+    return vkCode == finalKey || (finalKey == 0x86 && vkCode == 0xB6);
+  }
+
+  private static bool FinalKeyDown() {
+    return Down.Contains(finalKey) || (finalKey == 0x86 && Down.Contains(0xB6));
+  }
+
+  private static bool MatchesHoldChord() {
+    return MatchesModifiers() && (finalKey == 0 || FinalKeyDown());
+  }
+
+  private static void WriteEvent(string value) {
+    Console.WriteLine(value);
+    Console.Out.Flush();
   }
 
   private static IntPtr OnKeyboardEvent(int code, IntPtr wParam, IntPtr lParam) {
@@ -482,9 +527,42 @@ public static class FlowerWhispKeyboardHook {
       var isDown = wParam.ToInt32() == WM_KEYDOWN || wParam.ToInt32() == WM_SYSKEYDOWN;
       var wasDown = Down.Contains(data.vkCode);
       if (isDown) Down.Add(data.vkCode); else Down.Remove(data.vkCode);
-      if (isDown && !wasDown && data.vkCode == finalKey && MatchesModifiers()) {
+      if (isDown && !wasDown && IsFinalKey(data.vkCode) && MatchesModifiers()) {
         Console.WriteLine("TRIGGER");
         Console.Out.Flush();
+        return (IntPtr)1;
+      }
+    }
+    return CallNextHookEx(hook, code, wParam, lParam);
+  }
+
+  private static IntPtr OnHoldKeyboardEvent(int code, IntPtr wParam, IntPtr lParam) {
+    if (code >= 0 && (wParam.ToInt32() == WM_KEYDOWN || wParam.ToInt32() == WM_SYSKEYDOWN || wParam.ToInt32() == WM_KEYUP || wParam.ToInt32() == WM_SYSKEYUP)) {
+      var data = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
+      var isDown = wParam.ToInt32() == WM_KEYDOWN || wParam.ToInt32() == WM_SYSKEYDOWN;
+      var wasDown = Down.Contains(data.vkCode);
+      var wasHoldActive = holdActive;
+      if (isDown) Down.Add(data.vkCode); else Down.Remove(data.vkCode);
+      var chordDown = MatchesHoldChord();
+      if (!holdActive && isDown && !wasDown && chordDown) {
+        holdActive = true;
+        WriteEvent("HOLD_DOWN");
+        // If Win is the final modifier pressed for a modifier-only hold, own
+        // both of its edges. That prevents the Start menu from opening when
+        // Ctrl+Win is released, without swallowing an earlier standalone Win
+        // down event that Windows has already received.
+        if (finalKey == 0 && (data.vkCode == VK_LWIN || data.vkCode == VK_RWIN)) Suppressed.Add(data.vkCode);
+      } else if (holdActive && !chordDown) {
+        holdActive = false;
+        WriteEvent("HOLD_UP");
+      }
+
+      // A non-modifier hold key is application-owned while the gesture is
+      // active. For modifier-only holds, suppress only an activation-edge Win
+      // key whose matching down event was also swallowed above.
+      if (finalKey != 0 && IsFinalKey(data.vkCode) && (wasHoldActive || holdActive)) return (IntPtr)1;
+      if (Suppressed.Contains(data.vkCode)) {
+        if (!isDown) Suppressed.Remove(data.vkCode);
         return (IntPtr)1;
       }
     }
@@ -512,6 +590,13 @@ public static class FlowerWhispKeyboardHook {
     if (vkCode == 0x25) return "ArrowLeft";
     if (vkCode == 0x27) return "ArrowRight";
     if (vkCode == 0x2C) return "PrintScreen";
+    if (vkCode == 0xAF) return "VolumeUp";
+    if (vkCode == 0xAE) return "VolumeDown";
+    if (vkCode == 0xAD) return "VolumeMute";
+    if (vkCode == 0xB3) return "MediaPlayPause";
+    if (vkCode == 0xB0) return "MediaNextTrack";
+    if (vkCode == 0xB1) return "MediaPreviousTrack";
+    if (vkCode == 0xB2) return "MediaStop";
     if (vkCode >= 0x41 && vkCode <= 0x5A) return ((char)vkCode).ToString();
     if (vkCode >= 0x30 && vkCode <= 0x39) return ((char)vkCode).ToString();
     if (vkCode >= 0x70 && vkCode <= 0x87) return "F" + (vkCode - 0x6F).ToString();
@@ -529,6 +614,7 @@ public static class FlowerWhispKeyboardHook {
     if (vkCode == VK_LWIN) return "MetaLeft";
     if (vkCode == VK_RWIN) return "MetaRight";
     if (vkCode == 0x20) return "Space";
+    if (vkCode == 0xB6) return "LaunchApp1";
     if (vkCode >= 0x41 && vkCode <= 0x5A) return "Key" + ((char)vkCode).ToString();
     if (vkCode >= 0x30 && vkCode <= 0x39) return "Digit" + ((char)vkCode).ToString();
     return "";
@@ -539,18 +625,19 @@ public static class FlowerWhispKeyboardHook {
       var data = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
       var isDown = wParam.ToInt32() == WM_KEYDOWN || wParam.ToInt32() == WM_SYSKEYDOWN;
       var wasDown = Down.Contains(data.vkCode);
-      if (isDown) Down.Add(data.vkCode); else Down.Remove(data.vkCode);
-      if (isDown && !wasDown) {
+      var changed = (isDown && !wasDown) || (!isDown && wasDown);
+      if (isDown) Down.Add(data.vkCode);
+      if (changed) {
         var key = KeyName(data.vkCode);
         if (key.Length > 0) {
           var control = IsDown(VK_LCONTROL, VK_RCONTROL);
           var shift = IsDown(VK_LSHIFT, VK_RSHIFT);
           var alt = IsDown(VK_LMENU, VK_RMENU);
           var win = IsDown(VK_LWIN, VK_RWIN);
-          Console.WriteLine("KEY|" + key + "|" + KeyCodeName(data.vkCode) + "|" + (control ? "1" : "0") + "|" + (alt ? "1" : "0") + "|" + (shift ? "1" : "0") + "|" + (win ? "1" : "0") + "|0");
-          Console.Out.Flush();
+          WriteEvent((isDown ? "KEYDOWN|" : "KEYUP|") + key + "|" + KeyCodeName(data.vkCode) + "|" + (control ? "1" : "0") + "|" + (alt ? "1" : "0") + "|" + (shift ? "1" : "0") + "|" + (win ? "1" : "0") + "|0");
         }
       }
+      if (!isDown) Down.Remove(data.vkCode);
     }
     return CallNextHookEx(hook, code, wParam, lParam);
   }
@@ -574,24 +661,35 @@ public static class FlowerWhispKeyboardHook {
     UnhookWindowsHookEx(hook);
   }
 
-  public static void Run(string shortcut) {
+  private static bool ConfigureShortcut(string shortcut) {
+    finalKey = 0;
+    wantControl = false;
+    wantShift = false;
+    wantAlt = false;
+    wantWin = false;
     foreach (var part in shortcut.Split(new[] {'+'}, StringSplitOptions.RemoveEmptyEntries)) {
       if (part == "Control") wantControl = true;
       else if (part == "Shift") wantShift = true;
       else if (part == "Alt") wantAlt = true;
       else if (part == "Super") wantWin = true;
-      else finalKey = KeyCode(part);
+      else {
+        if (finalKey != 0) return false;
+        finalKey = KeyCode(part);
+        if (finalKey == 0) return false;
+      }
     }
-    if (finalKey == 0 || (!wantControl && !wantShift && !wantAlt && !wantWin)) {
-      Console.WriteLine("ERROR");
-      Console.Out.Flush();
+    return finalKey != 0 || wantControl || wantShift || wantAlt || wantWin;
+  }
+
+  public static void Run(string shortcut) {
+    if (!ConfigureShortcut(shortcut) || finalKey == 0 || (!wantControl && !wantShift && !wantAlt && !wantWin)) {
+      WriteEvent("ERROR|CONFIGURE|" + shortcut);
       return;
     }
     callback = OnKeyboardEvent;
     hook = SetWindowsHookEx(WH_KEYBOARD_LL, callback, GetModuleHandle(null), 0);
     if (hook == IntPtr.Zero) {
-      Console.WriteLine("ERROR");
-      Console.Out.Flush();
+      WriteEvent("ERROR|HOOK|" + Marshal.GetLastWin32Error().ToString());
       return;
     }
     Console.WriteLine("READY");
@@ -603,10 +701,35 @@ public static class FlowerWhispKeyboardHook {
     }
     UnhookWindowsHookEx(hook);
   }
+
+  public static void RunHold(string shortcut) {
+    if (!ConfigureShortcut(shortcut)) {
+      WriteEvent("ERROR|CONFIGURE|" + shortcut);
+      return;
+    }
+    Down.Clear();
+    Suppressed.Clear();
+    holdActive = false;
+    callback = OnHoldKeyboardEvent;
+    hook = SetWindowsHookEx(WH_KEYBOARD_LL, callback, GetModuleHandle(null), 0);
+    if (hook == IntPtr.Zero) {
+      WriteEvent("ERROR|HOOK|" + Marshal.GetLastWin32Error().ToString());
+      return;
+    }
+    WriteEvent("READY");
+    MSG message;
+    while (GetMessage(out message, IntPtr.Zero, 0, 0) > 0) {
+      TranslateMessage(ref message);
+      DispatchMessage(ref message);
+    }
+    UnhookWindowsHookEx(hook);
+  }
 }
 '@
 if ($env:FLOWERWHISP_RECORDING -eq '1') {
   [FlowerWhispKeyboardHook]::Record()
+} elseif ($env:FLOWERWHISP_HOLD -eq '1') {
+  [FlowerWhispKeyboardHook]::RunHold($env:FLOWERWHISP_SHORTCUT)
 } else {
   [FlowerWhispKeyboardHook]::Run($env:FLOWERWHISP_SHORTCUT)
 }
@@ -632,6 +755,13 @@ const stopWindowsShortcutHook = (): void => {
   const child = shortcutHookProcess
   shortcutHookProcess = null
   shortcutHookShortcut = ''
+  terminateShortcutHookProcess(child)
+}
+
+const stopWindowsHoldShortcutHook = (): void => {
+  const child = holdShortcutHookProcess
+  holdShortcutHookProcess = null
+  holdShortcutHookShortcut = ''
   terminateShortcutHookProcess(child)
 }
 
@@ -680,14 +810,17 @@ const startWindowsShortcutRecorder = (): Promise<boolean> => {
         clearWait()
         continue
       }
-      if (line === 'ERROR') {
+      if (line.startsWith('ERROR')) {
+        console.error(`[shortcut-recorder] native helper reported ${line}`)
         fail()
         continue
       }
-      if (!line.startsWith('KEY|') || shortcutRecordHookProcess !== child) continue
+      const type = line.startsWith('KEYDOWN|') ? 'keydown' : line.startsWith('KEYUP|') ? 'keyup' : null
+      if (!type || shortcutRecordHookProcess !== child) continue
       const [, key, code, control, alt, shift, win, repeat] = line.split('|')
       if (!key) continue
       send('shortcut:record', {
+        type,
         key,
         code: code || undefined,
         ctrlKey: control === '1',
@@ -698,7 +831,7 @@ const startWindowsShortcutRecorder = (): Promise<boolean> => {
       })
     }
   })
-  child.stderr.on('data', () => undefined)
+  child.stderr.on('data', (chunk: Buffer | string) => console.error(`[shortcut-recorder] ${chunk.toString().trim()}`))
   child.once('error', () => fail())
   child.once('close', () => {
     if (!ready) fail()
@@ -716,7 +849,7 @@ const startWindowsShortcutRecorder = (): Promise<boolean> => {
 }
 
 const startWindowsShortcutHook = (shortcut: string): Promise<boolean> => {
-  if (process.platform !== 'win32' || !isWindowsSpaceShortcut(shortcut)) return Promise.resolve(false)
+  if (process.platform !== 'win32' || !isValidShortcut(shortcut)) return Promise.resolve(false)
   stopWindowsShortcutHook()
   const child = spawn(
     'powershell.exe',
@@ -758,12 +891,13 @@ const startWindowsShortcutHook = (shortcut: string): Promise<boolean> => {
         clearWait()
       } else if (line === 'TRIGGER') {
         shortcutHandler()
-      } else if (line === 'ERROR') {
+      } else if (line.startsWith('ERROR')) {
+        console.error(`[hands-free-shortcut] native helper reported ${line}`)
         fail()
       }
     }
   })
-  child.stderr.on('data', () => undefined)
+  child.stderr.on('data', (chunk: Buffer | string) => console.error(`[hands-free-shortcut] ${chunk.toString().trim()}`))
   child.once('error', () => fail())
   child.once('close', () => {
     if (!ready) fail()
@@ -788,6 +922,127 @@ const startWindowsShortcutHook = (shortcut: string): Promise<boolean> => {
   })
 }
 
+const startWindowsHoldShortcutHook = (shortcut: string): Promise<boolean> => {
+  if (process.platform !== 'win32' || !isValidHoldShortcut(shortcut)) return Promise.resolve(false)
+  stopWindowsHoldShortcutHook()
+  const child = spawn(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', windowsShortcutHookScript],
+    {
+      windowsHide: true,
+      env: { ...process.env, FLOWERWHISP_HOLD: '1', FLOWERWHISP_SHORTCUT: shortcut },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  ) as ShortcutHookProcess
+  holdShortcutHookProcess = child
+  holdShortcutHookShortcut = shortcut
+  let buffer = ''
+  let ready = false
+  let settled = false
+  let timeout: NodeJS.Timeout | null = null
+  const clearWait = (): void => {
+    if (timeout) clearTimeout(timeout)
+    timeout = null
+  }
+  const fail = (): void => {
+    if (settled) return
+    settled = true
+    clearWait()
+    if (holdShortcutHookProcess === child) {
+      holdShortcutHookProcess = null
+      holdShortcutHookShortcut = ''
+    }
+    terminateShortcutHookProcess(child)
+  }
+  child.stdout.on('data', (chunk: Buffer | string) => {
+    buffer += chunk.toString()
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (line === 'READY' && !ready) {
+        ready = true
+        settled = true
+        clearWait()
+      } else if (line === 'HOLD_DOWN') {
+        holdShortcutPressed()
+      } else if (line === 'HOLD_UP') {
+        holdShortcutReleased()
+      } else if (line.startsWith('ERROR')) {
+        console.error(`[push-to-talk-shortcut] native helper reported ${line}`)
+        fail()
+      }
+    }
+  })
+  child.stderr.on('data', (chunk: Buffer | string) => console.error(`[push-to-talk-shortcut] ${chunk.toString().trim()}`))
+  child.once('error', () => fail())
+  child.once('close', () => {
+    if (!ready) fail()
+    if (holdShortcutHookProcess === child) {
+      holdShortcutHookProcess = null
+      holdShortcutHookShortcut = ''
+      if (registeredHoldShortcut === shortcut) {
+        registeredHoldShortcut = ''
+        holdShortcutRegistered = false
+        send('toast', { kind: 'shortcut-unavailable', shortcut, error: 'The Windows hold-to-dictate hook stopped.' })
+        send('toast', { kind: 'refresh' })
+      }
+    }
+  })
+  timeout = setTimeout(() => fail(), 3_000)
+  return new Promise((resolve) => {
+    const check = (): void => {
+      if (ready) resolve(true)
+      else if (!holdShortcutHookProcess || holdShortcutHookProcess !== child) resolve(false)
+      else setTimeout(check, 25)
+    }
+    check()
+  })
+}
+
+const holdShortcutPressed = (): void => {
+  // A second press during the brief release grace period is Flow's
+  // double-tap-to-lock gesture. Keep the existing recorder and promote it to
+  // hands-free instead of tearing it down and starting another one.
+  if (pendingHoldReleaseTimer) {
+    clearTimeout(pendingHoldReleaseTimer)
+    pendingHoldReleaseTimer = null
+    if (shortcutStartInFlight && shortcutStartMode === 'hold') {
+      promoteHoldToToggleWhileStarting = true
+      stopRequestedWhileShortcutStarts = false
+      return
+    }
+    if (activeSession?.mode === 'hold' && (activeSession.phase === 'starting' || activeSession.phase === 'recording')) {
+      activeSession.mode = 'toggle'
+      publishOverlay({ mode: 'toggle', message: 'Hands-free dictation active. Press the shortcut again to finish.' })
+      return
+    }
+  }
+  if (shortcutStartInFlight) return
+  if (!activeSession || ['ready', 'success', 'error', 'cancelled'].includes(activeSession.phase)) {
+    void startSession('hold')
+  }
+}
+
+const holdShortcutReleased = (): void => {
+  // Keep release slightly deferred so Ctrl+Win+Space can promote the prefix
+  // capture even if stdout from the two Windows hook processes arrives a few
+  // milliseconds out of order. The same grace period enables double-tap hold
+  // to lock into hands-free mode, matching Flow's interaction model.
+  if (promoteHoldToToggleWhileStarting || activeSession?.mode === 'toggle') return
+  if (pendingHoldReleaseTimer) clearTimeout(pendingHoldReleaseTimer)
+  pendingHoldReleaseTimer = setTimeout(() => {
+    pendingHoldReleaseTimer = null
+    if (promoteHoldToToggleWhileStarting || activeSession?.mode === 'toggle') return
+    if (shortcutStartInFlight && shortcutStartMode === 'hold') {
+      stopRequestedWhileShortcutStarts = true
+      return
+    }
+    if (activeSession?.mode === 'hold' && (activeSession.phase === 'starting' || activeSession.phase === 'recording')) {
+      void stopSession()
+    }
+  }, 180)
+}
+
 const shortcutHandler = (): void => {
   // Windows can deliver more than one accelerator event while a key chord is
   // being released. Debounce that edge so one physical press never starts and
@@ -795,6 +1050,30 @@ const shortcutHandler = (): void => {
   const now = Date.now()
   if (now - lastShortcutTriggerAt < 300) return
   lastShortcutTriggerAt = now
+
+  // Wispr's Windows defaults deliberately overlap: Ctrl+Win is push-to-talk
+  // and Ctrl+Win+Space is hands-free. The prefix starts one recorder; Space
+  // locks that recorder into toggle mode instead of stopping it or opening a
+  // second session. This also makes any configured toggle chord a reliable
+  // way to promote an in-progress hold capture.
+  if (shortcutStartInFlight && shortcutStartMode === 'hold') {
+    if (pendingHoldReleaseTimer) clearTimeout(pendingHoldReleaseTimer)
+    pendingHoldReleaseTimer = null
+    promoteHoldToToggleWhileStarting = true
+    stopRequestedWhileShortcutStarts = false
+    if (activeSession?.mode === 'hold') {
+      activeSession.mode = 'toggle'
+      publishOverlay({ mode: 'toggle', message: 'Hands-free dictation active. Press the shortcut again to finish.' })
+    }
+    return
+  }
+  if (activeSession?.mode === 'hold' && (activeSession.phase === 'starting' || activeSession.phase === 'recording')) {
+    if (pendingHoldReleaseTimer) clearTimeout(pendingHoldReleaseTimer)
+    pendingHoldReleaseTimer = null
+    activeSession.mode = 'toggle'
+    publishOverlay({ mode: 'toggle', message: 'Hands-free dictation active. Press the shortcut again to finish.' })
+    return
+  }
 
   if (!activeSession || ['ready', 'success', 'error', 'cancelled'].includes(activeSession.phase)) {
     if (shortcutStartInFlight) {
@@ -808,16 +1087,40 @@ const shortcutHandler = (): void => {
   if (activeSession.phase === 'starting' || activeSession.phase === 'recording') void stopSession()
 }
 
-const unregisterShortcut = (): void => {
-  if (registeredShortcut) globalShortcut.unregister(registeredShortcut)
-  stopWindowsShortcutHook()
-  registeredShortcut = ''
-  shortcutRegistered = false
+type DictationShortcutSettings = Pick<PublicSettings, 'holdShortcut' | 'toggleShortcut'>
+
+const shortcutSignature = (shortcut: string): string => shortcut.split('+').filter(Boolean).sort().join('+')
+
+const shortcutIsStrictSubset = (candidate: string, complete: string): boolean => {
+  const candidateParts = new Set(candidate.split('+').filter(Boolean))
+  const completeParts = new Set(complete.split('+').filter(Boolean))
+  return candidateParts.size < completeParts.size && [...candidateParts].every((part) => completeParts.has(part))
 }
 
-const attemptRegisterShortcut = async (shortcut: string): Promise<boolean> => {
+const unregisterShortcuts = (): void => {
+  if (pendingHoldReleaseTimer) clearTimeout(pendingHoldReleaseTimer)
+  pendingHoldReleaseTimer = null
+  if (registeredShortcut) globalShortcut.unregister(registeredShortcut)
+  stopWindowsShortcutHook()
+  stopWindowsHoldShortcutHook()
+  registeredShortcut = ''
+  shortcutRegistered = false
+  registeredHoldShortcut = ''
+  holdShortcutRegistered = false
+}
+
+const attemptRegisterToggleShortcut = async (shortcut: string, preferWindowsHook = false): Promise<boolean> => {
   if (!isValidShortcut(shortcut)) return false
   shortcutRegistrationError = 'That shortcut is unavailable or already claimed by another app.'
+  // When push-to-talk is a prefix of hands-free (Ctrl+Win versus
+  // Ctrl+Win+Space), install this hook after the hold hook. Windows calls the
+  // newest low-level hook first, so it can observe the complete chord before
+  // the hold hook swallows Win to keep the Start menu closed.
+  if (preferWindowsHook && await startWindowsShortcutHook(shortcut)) {
+    registeredShortcut = shortcut
+    shortcutRegistered = true
+    return true
+  }
   try {
     const registered = globalShortcut.register(shortcut, shortcutHandler)
     if (registered) {
@@ -838,36 +1141,105 @@ const attemptRegisterShortcut = async (shortcut: string): Promise<boolean> => {
   return false
 }
 
-const registerShortcut = async (): Promise<boolean> => {
+const attemptRegisterHoldShortcut = async (shortcut: string): Promise<boolean> => {
+  if (!isValidHoldShortcut(shortcut)) return false
+  holdShortcutRegistrationError = process.platform === 'win32'
+    ? 'FlowerWhisp could not install the Windows key-down/key-up hook for this hold combination.'
+    : 'Hold-to-dictate currently requires the Windows native key-up hook.'
+  if (await startWindowsHoldShortcutHook(shortcut)) {
+    registeredHoldShortcut = shortcut
+    holdShortcutRegistered = true
+    return true
+  }
+  return false
+}
+
+const registerShortcuts = async (requested?: DictationShortcutSettings, announce = true): Promise<boolean> => {
   if (shortcutRecording) return false
-  const snapshot = await getSnapshot()
-  const requestedShortcut = snapshot.settings.toggleShortcut
-  unregisterShortcut()
-  const registered = await attemptRegisterShortcut(requestedShortcut)
-  send('toast', {
-    kind: registered ? 'shortcut-ready' : 'shortcut-unavailable',
-    shortcut: registered ? registeredShortcut : requestedShortcut,
-    error: registered ? undefined : shortcutRegistrationError,
-  })
+  const snapshot = requested ?? (await getSnapshot()).settings
+  const requestedToggleShortcut = snapshot.toggleShortcut
+  const requestedHoldShortcut = snapshot.holdShortcut
+  unregisterShortcuts()
+  lastShortcutRegistrationError = ''
+
+  if (shortcutSignature(requestedToggleShortcut) === shortcutSignature(requestedHoldShortcut)) {
+    shortcutRegistrationError = 'Hold to dictate and toggle dictation must use different combinations.'
+    holdShortcutRegistrationError = shortcutRegistrationError
+    lastShortcutRegistrationError = shortcutRegistrationError
+    if (announce) send('toast', { kind: 'shortcut-unavailable', shortcut: requestedToggleShortcut, error: shortcutRegistrationError })
+    send('toast', { kind: 'refresh' })
+    return false
+  }
+
+  const holdReady = await attemptRegisterHoldShortcut(requestedHoldShortcut)
+  if (!holdReady) {
+    lastShortcutRegistrationError = holdShortcutRegistrationError
+    if (announce) send('toast', { kind: 'shortcut-unavailable', shortcut: requestedHoldShortcut, error: holdShortcutRegistrationError })
+    send('toast', { kind: 'refresh' })
+    return false
+  }
+
+  const toggleReady = await attemptRegisterToggleShortcut(
+    requestedToggleShortcut,
+    process.platform === 'win32' && shortcutIsStrictSubset(requestedHoldShortcut, requestedToggleShortcut),
+  )
+  if (!toggleReady) {
+    lastShortcutRegistrationError = shortcutRegistrationError
+    unregisterShortcuts()
+    if (announce) send('toast', { kind: 'shortcut-unavailable', shortcut: requestedToggleShortcut, error: shortcutRegistrationError })
+    send('toast', { kind: 'refresh' })
+    return false
+  }
+
+  if (announce) send('toast', { kind: 'shortcuts-ready' })
   // Settings must refresh after the native registration attempt so the
-  // displayed chord and the registered chord cannot drift apart.
+  // two displayed chords and their active registrations cannot drift apart.
   send('toast', { kind: 'refresh' })
-  console.info(`[shortcut] requested=${requestedShortcut} active=${registeredShortcut || 'none'} registered=${registered}`)
-  return registered
+  console.info(`[shortcut] toggle=${registeredShortcut || 'none'} hold=${registeredHoldShortcut || 'none'} registered=true`)
+  return true
 }
 
 const setShortcutRecording = async (recording: boolean): Promise<CommandResult> => {
-  shortcutRecording = recording
   if (recording) {
-    unregisterShortcut()
-    await startWindowsShortcutRecorder()
+    if (shortcutRecording) return result(false, undefined, 'Another shortcut field is already listening.')
+    const settings = (await getSnapshot()).settings
+    shortcutSettingsBeforeRecording = {
+      holdShortcut: settings.holdShortcut,
+      toggleShortcut: settings.toggleShortcut,
+    }
+    shortcutRecording = true
+    unregisterShortcuts()
+    const nativeRecorderReady = await startWindowsShortcutRecorder()
+    if (process.platform === 'win32' && !nativeRecorderReady) {
+      shortcutRecording = false
+      const previous = shortcutSettingsBeforeRecording
+      shortcutSettingsBeforeRecording = null
+      if (previous) await registerShortcuts(previous, false)
+      return result(false, undefined, 'FlowerWhisp could not start the Windows shortcut recorder. The existing shortcuts remain active.')
+    }
     return result(true, 'Shortcut recording is ready.')
   }
+  if (!shortcutRecording) return result(true, 'Shortcuts are already active.')
+  shortcutRecording = false
   stopWindowsShortcutRecorder()
-  await registerShortcut()
-  return shortcutRegistered
-    ? result(true, 'Shortcut restored.')
-    : result(false, undefined, shortcutRegistrationError)
+  const desired = (await getSnapshot()).settings
+  if (await registerShortcuts(desired)) {
+    shortcutSettingsBeforeRecording = null
+    return result(true, 'Push-to-talk and hands-free shortcuts are active.')
+  }
+
+  const rejectedError = lastShortcutRegistrationError || 'The new shortcut could not be activated.'
+  const previous = shortcutSettingsBeforeRecording
+  shortcutSettingsBeforeRecording = null
+  if (previous) {
+    await store.update((snapshot) => {
+      snapshot.settings.holdShortcut = previous.holdShortcut
+      snapshot.settings.toggleShortcut = previous.toggleShortcut
+    })
+    await registerShortcuts(previous, false)
+    send('toast', { kind: 'refresh' })
+  }
+  return result(false, undefined, `${rejectedError} The previous shortcuts were restored.`)
 }
 
 const startSession = async (mode: DictationMode, fallbackInsertionTarget?: InsertionTarget | null): Promise<CommandResult> => {
@@ -878,17 +1250,21 @@ const startSession = async (mode: DictationMode, fallbackInsertionTarget?: Inser
   if (activeSession) return result(false, undefined, 'A dictation is already in progress.')
   if (shortcutStartInFlight) return result(false, undefined, 'The microphone is still starting.')
   shortcutStartInFlight = true
+  shortcutStartMode = mode
+  if (mode === 'hold') promoteHoldToToggleWhileStarting = false
   const insertionTarget = fallbackInsertionTarget === undefined ? captureExternalInsertionTarget() : fallbackInsertionTarget
   try {
     const settings = (await getSnapshot()).settings
-    activeSession = { id: randomUUID(), mode, startedAt: Date.now(), phase: 'starting', result: '', recordId: null, fallbackInsertionTarget: insertionTarget }
+    const resolvedMode: DictationMode = mode === 'hold' && promoteHoldToToggleWhileStarting ? 'toggle' : mode
+    promoteHoldToToggleWhileStarting = false
+    activeSession = { id: randomUUID(), mode: resolvedMode, startedAt: Date.now(), phase: 'starting', result: '', recordId: null, fallbackInsertionTarget: insertionTarget }
   publishOverlay({
     phase: 'starting',
     sessionId: activeSession.id,
-    mode,
+    mode: resolvedMode,
     level: 0,
     elapsedMs: 0,
-    message: mode === 'hold' ? 'Hold mode is available inside FlowerWhisp.' : 'Starting microphone…',
+    message: 'Starting microphone…',
     transcript: '',
     result: '',
     error: null,
@@ -898,8 +1274,8 @@ const startSession = async (mode: DictationMode, fallbackInsertionTarget?: Inser
   })
   startElapsedTicker()
   if (settings.showPill) showOverlay()
-  mainWindow?.webContents.send('recording:start', { sessionId: activeSession.id, mode })
-    advance('recording', { message: mode === 'hold' ? 'Hold mode is local to the app without a native key-up hook.' : 'Speak naturally, then press the shortcut again.' })
+  mainWindow?.webContents.send('recording:start', { sessionId: activeSession.id, mode: resolvedMode })
+    advance('recording', { message: resolvedMode === 'hold' ? 'Keep holding the shortcut. Release it to finish.' : 'Hands-free dictation active. Press the shortcut again to finish.' })
     if (stopRequestedWhileShortcutStarts) {
       stopRequestedWhileShortcutStarts = false
       void stopSession()
@@ -907,7 +1283,11 @@ const startSession = async (mode: DictationMode, fallbackInsertionTarget?: Inser
     return result(true)
   } finally {
     shortcutStartInFlight = false
-    if (!activeSession) stopRequestedWhileShortcutStarts = false
+    shortcutStartMode = null
+    if (!activeSession) {
+      stopRequestedWhileShortcutStarts = false
+      promoteHoldToToggleWhileStarting = false
+    }
   }
 }
 
@@ -1049,6 +1429,7 @@ const applySystemSettings = (settings: PublicSettings): void => {
 
 const saveSettings = async (patch: Partial<PublicSettings>): Promise<CommandResult> => {
   if (patch.toggleShortcut !== undefined && !isValidShortcut(patch.toggleShortcut)) return result(false, undefined, 'Use at least one modifier and one final key, for example Control+Super+Space or Control+Shift+Tab.')
+  if (patch.holdShortcut !== undefined && !isValidHoldShortcut(patch.holdShortcut)) return result(false, undefined, 'Use one or more modifiers, a modifier plus a final key, or a function key for hold to dictate.')
   if (patch.cleanupPrompts !== undefined) {
     for (const level of ['none', 'light', 'medium'] as const) {
       const prompt = patch.cleanupPrompts[level]
@@ -1057,18 +1438,33 @@ const saveSettings = async (patch: Partial<PublicSettings>): Promise<CommandResu
   }
   if (patch.theme !== undefined && !['light', 'dark', 'system'].includes(patch.theme)) return result(false, undefined, 'Choose light, dark, or system appearance.')
   const previous = await getSnapshot()
-  const previousShortcut = previous.settings.toggleShortcut
-  if (patch.toggleShortcut !== undefined && patch.toggleShortcut !== previousShortcut && !shortcutRecording) {
-    const previousActiveShortcut = registeredShortcut
-    if (!shortcutRecording) unregisterShortcut()
-    if (!(await attemptRegisterShortcut(patch.toggleShortcut))) {
-      if (!shortcutRecording && previousActiveShortcut) await attemptRegisterShortcut(previousActiveShortcut)
-      return result(false, undefined, shortcutRegistrationError)
-    }
+  const previousShortcuts: DictationShortcutSettings = {
+    holdShortcut: previous.settings.holdShortcut,
+    toggleShortcut: previous.settings.toggleShortcut,
   }
-  const updated = await store.update((snapshot) => {
-    snapshot.settings = { ...snapshot.settings, ...patch }
-  })
+  const candidateShortcuts: DictationShortcutSettings = {
+    holdShortcut: patch.holdShortcut ?? previousShortcuts.holdShortcut,
+    toggleShortcut: patch.toggleShortcut ?? previousShortcuts.toggleShortcut,
+  }
+  if (shortcutSignature(candidateShortcuts.holdShortcut) === shortcutSignature(candidateShortcuts.toggleShortcut)) {
+    return result(false, undefined, 'Hold to dictate and toggle dictation must use different combinations.')
+  }
+  const shortcutsChanged = candidateShortcuts.holdShortcut !== previousShortcuts.holdShortcut
+    || candidateShortcuts.toggleShortcut !== previousShortcuts.toggleShortcut
+  if (shortcutsChanged && !shortcutRecording && !(await registerShortcuts(candidateShortcuts, false))) {
+    const registrationError = lastShortcutRegistrationError || 'The new shortcut could not be activated.'
+    await registerShortcuts(previousShortcuts, false)
+    return result(false, undefined, registrationError)
+  }
+  let updated: AppSnapshot
+  try {
+    updated = await store.update((snapshot) => {
+      snapshot.settings = { ...snapshot.settings, ...patch }
+    })
+  } catch {
+    if (shortcutsChanged && !shortcutRecording) await registerShortcuts(previousShortcuts, false)
+    return result(false, undefined, 'FlowerWhisp could not save the settings file. The previous shortcuts remain active.')
+  }
   if (patch.theme !== undefined) {
     nativeTheme.themeSource = patch.theme
     mainWindow?.setBackgroundColor(windowBackgroundColor())
@@ -1136,6 +1532,10 @@ const registerIpc = (): void => {
   ipcMain.handle('app:bootstrap', async (event) => (isTrustedSender(event) ? buildBootstrap() : null))
   ipcMain.handle('app:health', async (event) => {
     const trusted = isTrustedSender(event)
+    // The smoke renderer can load before initialization has finished awaiting
+    // the native helper processes. Runtime evidence must observe the settled
+    // registration result, not that harmless startup race.
+    if (isSmoke && shortcutInitialization) await shortcutInitialization
     const health = {
       appName: app.getName(),
       packaged: app.isPackaged,
@@ -1144,6 +1544,12 @@ const registerIpc = (): void => {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      shortcuts: {
+        pushToTalkRegistered: holdShortcutRegistered,
+        pushToTalk: registeredHoldShortcut,
+        handsFreeRegistered: shortcutRegistered,
+        handsFree: registeredShortcut,
+      },
     }
     if (isSmoke && trusted) {
       const evidencePath = path.join(process.cwd(), 'artifacts', 'electron-smoke', 'evidence.json')
@@ -1385,7 +1791,8 @@ const initialize = async (): Promise<void> => {
   registerIpc()
   createTray()
   setupPermissions()
-  await registerShortcut()
+  shortcutInitialization = registerShortcuts()
+  await shortcutInitialization
   if (!isSmoke) mainWindow?.show()
 }
 
@@ -1401,6 +1808,7 @@ if (!gotLock) {
   app.on('will-quit', () => {
     stopElapsedTicker()
     stopWindowsShortcutHook()
+    stopWindowsHoldShortcutHook()
     stopWindowsShortcutRecorder()
     globalShortcut.unregisterAll()
     tray?.destroy()

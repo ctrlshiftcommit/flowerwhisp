@@ -18,7 +18,7 @@ Verified original-profile totals: 10 records, 269 usage words, 11 dictations, an
 - Insights Download on mobile action and the fake Your usage button.
 - Dictionary and Snippets Import actions; Snippets’ fake scope tabs and formatting toolbar.
 - Scratchpad Add to Flow Bar and shortcut-link controls; the note row is now a status display.
-- Shortcut rows that were only visual placeholders; the settings cleanup now exposes one editable global dictation shortcut and removes the fake Middle Click/fallback rows.
+- Shortcut rows that were only visual placeholders; settings now expose independently editable global push-to-talk (hold/release) and hands-free (press again to stop) shortcuts, backed by native registration rather than display-only rows.
 - Settings controls with no backend behavior: microphone Change, App Language, sound toggles, and other dead settings.
 - Favorite transcript state/action. The transcript action menu still contains the requested Undo AI edit, Retry transcript, Extract audio, and Delete transcript actions.
 - The unreachable Snippets promo dismiss state.

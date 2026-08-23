@@ -54,7 +54,14 @@ try {
   evidence = null
 }
 
-const passed = !timedOut && exitCode === 0 && evidence?.rendererLoaded === true && evidence?.preloadBridge === true && evidence?.contextIsolation === true && evidence?.nodeIntegration === false && evidence?.sandbox === true
+const shortcutsReady = process.platform !== 'win32'
+  || (evidence?.shortcuts?.pushToTalkRegistered === true
+    && typeof evidence?.shortcuts?.pushToTalk === 'string'
+    && evidence.shortcuts.pushToTalk.length > 0
+    && evidence?.shortcuts?.handsFreeRegistered === true
+    && typeof evidence?.shortcuts?.handsFree === 'string'
+    && evidence.shortcuts.handsFree.length > 0)
+const passed = !timedOut && exitCode === 0 && evidence?.rendererLoaded === true && evidence?.preloadBridge === true && evidence?.contextIsolation === true && evidence?.nodeIntegration === false && evidence?.sandbox === true && shortcutsReady
 const report = { passed, exitCode, timedOut, evidence, logPath }
 console.log(JSON.stringify(report, null, 2))
 

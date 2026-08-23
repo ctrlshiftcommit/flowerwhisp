@@ -52,7 +52,16 @@ import type {
 } from '../shared/ipc'
 import { DEFAULT_CLEANUP_PROMPTS } from '../shared/promptDefaults'
 import type { ShortcutKeyEvent } from '../shared/shortcuts'
-import { DEFAULT_TOGGLE_SHORTCUT, isShortcutModifier, isValidShortcut, SHORTCUT_REQUIREMENT, shortcutFromEvent } from '../shared/shortcuts'
+import {
+  DEFAULT_HOLD_SHORTCUT,
+  DEFAULT_TOGGLE_SHORTCUT,
+  HOLD_SHORTCUT_REQUIREMENT,
+  isShortcutModifier,
+  isValidHoldShortcut,
+  isValidShortcut,
+  SHORTCUT_REQUIREMENT,
+  shortcutFromEvent,
+} from '../shared/shortcuts'
 
 type NavIcon = PhosphorIcon
 
@@ -65,6 +74,7 @@ const emptySettings: PublicSettings = {
   cleanupLevel: 'light',
   cleanupPrompts: { ...DEFAULT_CLEANUP_PROMPTS },
   defaultStyle: 'personal-casual',
+  holdShortcut: DEFAULT_HOLD_SHORTCUT,
   toggleShortcut: DEFAULT_TOGGLE_SHORTCUT,
   microphoneLabel: 'System default microphone',
   localCommand: '',
@@ -103,6 +113,8 @@ const emptyBootstrap = (): BootstrapPayload => ({
   usage: [],
   scratchpad: '',
   hasGroqKey: false,
+  holdShortcutRegistered: false,
+  registeredHoldShortcut: '',
   shortcutRegistered: false,
   registeredShortcut: '',
   capabilities: {
@@ -306,21 +318,35 @@ const IconButton = ({
   </button>
 )
 
-const ShortcutRecorder = ({ label, value, onChange, onListeningChange }: { label: string; value: string; onChange: (value: string) => Promise<CommandResult>; onListeningChange?: (listening: boolean) => void }) => {
+const ShortcutRecorder = ({
+  label,
+  value,
+  mode,
+  disabled = false,
+  onChange,
+  onListeningChange,
+}: {
+  label: string
+  value: string
+  mode: DictationMode
+  disabled?: boolean
+  onChange: (value: string) => Promise<CommandResult>
+  onListeningChange?: (listening: boolean) => void
+}) => {
   const [listening, setListening] = useState(false)
   const [pending, setPending] = useState('')
   const [error, setError] = useState('')
   const shortcutRecordingActive = useRef(false)
-  const modifierState = useRef(new Set<string>())
+  const pendingShortcut = useRef('')
   const begin = async () => {
-    if (shortcutRecordingActive.current) return
+    if (disabled || shortcutRecordingActive.current) return
     const response = await api.settings.setShortcutRecording(true)
     if (!response.ok) {
       setError(response.error ?? 'Could not pause the active shortcut.')
       return
     }
     shortcutRecordingActive.current = true
-    modifierState.current.clear()
+    pendingShortcut.current = ''
     setPending('')
     setError('')
     setListening(true)
@@ -333,7 +359,7 @@ const ShortcutRecorder = ({ label, value, onChange, onListeningChange }: { label
       restoreResponse = await api.settings.setShortcutRecording(false)
     }
     setListening(false)
-    modifierState.current.clear()
+    pendingShortcut.current = ''
     setPending('')
     onListeningChange?.(false)
     if (restoreResponse && !restoreResponse.ok) setError(restoreResponse.error ?? 'The saved shortcut could not be activated.')
@@ -349,6 +375,7 @@ const ShortcutRecorder = ({ label, value, onChange, onListeningChange }: { label
   }, [finish, onChange])
   const handleRecordedEvent = useCallback((event: ShortcutKeyEvent & { repeat?: boolean }) => {
     if (event.repeat) return
+    const eventType = event.type ?? 'keydown'
     const eventIsControl = event.key === 'Control' || event.code?.startsWith('Control')
     const eventIsAlt = event.key === 'Alt' || event.code?.startsWith('Alt')
     const eventIsShift = event.key === 'Shift' || event.code?.startsWith('Shift')
@@ -363,36 +390,58 @@ const ShortcutRecorder = ({ label, value, onChange, onListeningChange }: { label
         || event.getModifierState?.('OS')
         || event.getModifierState?.('Meta'),
     )
+    const eventIsModifier = eventIsControl || eventIsAlt || eventIsShift || eventIsWindows
     const hasModifier = Boolean(event.ctrlKey || event.altKey || event.shiftKey || eventIsWindows || eventIsControl || eventIsAlt || eventIsShift)
-    if (event.key === 'Escape' && !hasModifier) {
+    if (eventType === 'keydown' && event.key === 'Escape' && !hasModifier) {
       void finish()
       return
     }
 
-    // A recorder receives one keydown per physical key. Build the chord from
-    // the modifier state on that event, then wait for a non-modifier key
-    // before validating or committing it. This prevents intermediate values
-    // such as Shift+Win from being treated as a broken shortcut and lets
-    // Ctrl+Win+Space be committed as one complete accelerator.
-    const finalKey = shortcutFromEvent({
-      ...event,
-      ctrlKey: false,
-      altKey: false,
-      shiftKey: false,
-      metaKey: false,
-      getModifierState: undefined,
-    })
+    if (eventType === 'keyup') {
+      if (mode !== 'hold') return
+      const next = pendingShortcut.current
+      if (!next) return
+      if (!isValidHoldShortcut(next)) {
+        setError(HOLD_SHORTCUT_REQUIREMENT)
+        return
+      }
+      setError('')
+      void commit(next)
+      return
+    }
+
+    // Native recording delivers both edges. Build the complete chord on each
+    // key-down; toggle commits when its final key arrives, while hold commits
+    // only when the user releases the completed gesture.
+    const finalKey = eventIsModifier
+      ? ''
+      : shortcutFromEvent({
+          ...event,
+          ctrlKey: false,
+          altKey: false,
+          shiftKey: false,
+          metaKey: false,
+          getModifierState: undefined,
+        })
     const modifiers = new Set<string>()
     if (event.ctrlKey || eventIsControl) modifiers.add('Control')
     if (event.altKey || eventIsAlt) modifiers.add('Alt')
     if (event.shiftKey || eventIsShift) modifiers.add('Shift')
     if (eventIsWindows) modifiers.add('Super')
-    modifierState.current = modifiers
     const orderedModifiers = ['Control', 'Alt', 'Shift', 'Super'].filter((part) => modifiers.has(part))
     const next = [...orderedModifiers, ...(finalKey ? [finalKey] : [])].join('+')
     if (!next) return
-    const complete: boolean = isValidShortcut(next)
+    const complete = mode === 'hold' ? isValidHoldShortcut(next) : isValidShortcut(next)
+    pendingShortcut.current = next
     setPending(next)
+    if (mode === 'hold') {
+      if (!complete) {
+        setError(finalKey ? 'That hold key is not supported. Try a modifier chord, function key, Tab, Space, or another special key.' : HOLD_SHORTCUT_REQUIREMENT)
+        return
+      }
+      setError('')
+      return
+    }
     if (!finalKey) {
       // Modifier-only states are expected while the user is still holding
       // the chord. Keep the recorder calm until its final key arrives.
@@ -405,7 +454,7 @@ const ShortcutRecorder = ({ label, value, onChange, onListeningChange }: { label
     }
     setError('')
     void commit(next)
-  }, [commit, finish])
+  }, [commit, finish, mode])
   useEffect(() => {
     if (!listening) return undefined
     const offShortcut = api.on('shortcut:record', (payload) => {
@@ -430,6 +479,7 @@ const ShortcutRecorder = ({ label, value, onChange, onListeningChange }: { label
       type="button"
       aria-label={`${label}. ${listening ? 'Press the key combination now.' : 'Click to change shortcut.'}`}
       aria-pressed={listening}
+      disabled={disabled}
       onClick={(event) => {
         event.currentTarget.blur()
         void begin()
@@ -439,7 +489,7 @@ const ShortcutRecorder = ({ label, value, onChange, onListeningChange }: { label
         {display.split('+').filter(Boolean).map((part) => <kbd key={part}>{shortcutPartLabel(part)}</kbd>)}
         {!display ? <span className="shortcut-recorder-empty">No shortcut</span> : null}
       </span>
-      <span className="shortcut-recorder-hint">{listening ? 'Press keys…' : 'Click to change'}</span>
+      <span className="shortcut-recorder-hint">{listening ? mode === 'hold' && pending && isValidHoldShortcut(pending) ? 'Release to save' : 'Press keys…' : 'Click to change'}</span>
       {error ? <span className="shortcut-recorder-error" role="alert">{error}</span> : null}
     </button>
   )
@@ -959,7 +1009,7 @@ const SettingsPage = ({ data, onRefresh, onThemePreview }: { data: BootstrapPayl
   const [draft, setDraft] = useState(data.settings)
   const [key, setKey] = useState('')
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('system')
-  const [shortcutListening, setShortcutListening] = useState(false)
+  const [shortcutListening, setShortcutListening] = useState<DictationMode | null>(null)
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [draftDirty, setDraftDirty] = useState(false)
   useEffect(() => { if (!draftDirty) setDraft(data.settings) }, [data.settings, draftDirty])
@@ -989,20 +1039,33 @@ const SettingsPage = ({ data, onRefresh, onThemePreview }: { data: BootstrapPayl
           </SettingGroup>
         </SettingsSection>
       case 'general':
-        const requestedShortcut = draft.toggleShortcut
-        const shortcutMatches = data.shortcutRegistered && data.registeredShortcut === requestedShortcut
-        const shortcutDescription = shortcutListening
+        const holdListening = shortcutListening === 'hold'
+        const toggleListening = shortcutListening === 'toggle'
+        const requestedHoldShortcut = draft.holdShortcut
+        const requestedToggleShortcut = draft.toggleShortcut
+        const holdShortcutMatches = data.holdShortcutRegistered && data.registeredHoldShortcut === requestedHoldShortcut
+        const toggleShortcutMatches = data.shortcutRegistered && data.registeredShortcut === requestedToggleShortcut
+        const holdShortcutDescription = holdListening
           ? 'Press the complete combination now. Press Escape by itself to cancel.'
-          : shortcutMatches
-          ? 'Press this exact combination anywhere to start or finish one dictation.'
-          : data.shortcutRegistered
-            ? `The saved shortcut is not active. Active: ${formatShortcut(data.registeredShortcut)}.`
-            : 'No global shortcut is active. Hold every listed modifier, then press the final key.'
-        const shortcutStatus = shortcutListening ? 'Listening for keys…' : shortcutMatches ? 'Active globally' : data.shortcutRegistered ? 'Different shortcut active' : 'Unavailable'
+          : holdShortcutMatches
+            ? 'Hold this combination while speaking. Release it to transcribe and paste.'
+            : data.holdShortcutRegistered
+              ? `The saved hold shortcut is not active. Active: ${formatShortcut(data.registeredHoldShortcut)}.`
+              : 'No hold shortcut is active. Modifier-only combinations such as Ctrl + Win are supported.'
+        const toggleShortcutDescription = toggleListening
+          ? 'Press the complete combination now. Press Escape by itself to cancel.'
+          : toggleShortcutMatches
+            ? 'Press once to start hands-free dictation, then press the same combination again to finish.'
+            : data.shortcutRegistered
+              ? `The saved toggle shortcut is not active. Active: ${formatShortcut(data.registeredShortcut)}.`
+              : 'No toggle shortcut is active. Hold every listed modifier, then press one final key.'
+        const holdShortcutStatus = holdListening ? 'Listening for keys…' : holdShortcutMatches ? 'Active globally' : data.holdShortcutRegistered ? 'Different shortcut active' : 'Unavailable'
+        const toggleShortcutStatus = toggleListening ? 'Listening for keys…' : toggleShortcutMatches ? 'Active globally' : data.shortcutRegistered ? 'Different shortcut active' : 'Unavailable'
         return <SettingsSection id="general" title="General" description="">
-          <SettingGroup title="Global dictation">
-            <SettingRow label="Dictation shortcut" description={shortcutDescription}><div className="shortcut-setting-control"><ShortcutRecorder label="Global dictation shortcut" value={requestedShortcut} onChange={(value) => persist({ toggleShortcut: value })} onListeningChange={setShortcutListening} /><span className={`shortcut-status ${shortcutListening ? 'is-listening' : shortcutMatches ? 'is-ready' : 'is-unavailable'}`} role="status"><span className="shortcut-status-dot" />{shortcutStatus}</span></div></SettingRow>
-            <div className="shortcut-editor-guidance"><Info size={16} /><span>{SHORTCUT_REQUIREMENT} The displayed combination is the one shortcut FlowerWhisp listens for.</span></div>
+          <SettingGroup title="Global dictation shortcuts">
+            <SettingRow label="Push to talk · hold to dictate" description={holdShortcutDescription}><div className="shortcut-setting-control"><ShortcutRecorder label="Push to talk shortcut" mode="hold" value={requestedHoldShortcut} disabled={shortcutListening !== null && !holdListening} onChange={(value) => persist({ holdShortcut: value })} onListeningChange={(listening) => setShortcutListening((current) => listening ? 'hold' : current === 'hold' ? null : current)} /><span className={`shortcut-status ${holdListening ? 'is-listening' : holdShortcutMatches ? 'is-ready' : 'is-unavailable'}`} role="status"><span className="shortcut-status-dot" />{holdShortcutStatus}</span></div></SettingRow>
+            <SettingRow label="Hands-free mode · toggle dictation" description={toggleShortcutDescription}><div className="shortcut-setting-control"><ShortcutRecorder label="Hands-free mode shortcut" mode="toggle" value={requestedToggleShortcut} disabled={shortcutListening !== null && !toggleListening} onChange={(value) => persist({ toggleShortcut: value })} onListeningChange={(listening) => setShortcutListening((current) => listening ? 'toggle' : current === 'toggle' ? null : current)} /><span className={`shortcut-status ${toggleListening ? 'is-listening' : toggleShortcutMatches ? 'is-ready' : 'is-unavailable'}`} role="status"><span className="shortcut-status-dot" />{toggleShortcutStatus}</span></div></SettingRow>
+            <div className="shortcut-editor-guidance"><Info size={16} /><span><strong>Push to talk:</strong> {HOLD_SHORTCUT_REQUIREMENT}<br /><strong>Hands-free:</strong> {SHORTCUT_REQUIREMENT}<br />The two combinations must be different. An overlapping pair such as Ctrl + Win and Ctrl + Win + Space is supported: Space locks the active hold capture into hands-free mode.</span></div>
           </SettingGroup>
           <SettingGroup title="Capture">
             <SettingRow label="Microphone" description="Used by the browser capture surface."><span className="setting-value">{data.settings.microphoneLabel || 'System default microphone'}</span></SettingRow>
@@ -1067,7 +1130,7 @@ const OverlayPill = ({ overlay }: { overlay: OverlayState }) => {
     ? Math.max(overlay.elapsedMs, clockNow - timerStart.current.startedAt)
     : overlay.elapsedMs
 
-  if (resting) return <div className="overlay-root is-resting" role="status" aria-label="Flow is ready"><div className="overlay-pill is-idle"><span className="overlay-idle-dot" /><span className="sr-only">Flow is ready</span></div></div>
+  if (resting) return <div className="overlay-root is-resting" role="status" aria-label="Flow is ready"><span className="overlay-idle-mark" aria-hidden="true" /><span className="sr-only">Flow is ready</span></div>
   const stateLabel = `${phaseLabel[overlay.phase]}${overlay.message ? `: ${overlay.message}` : ''}`
   return <div className={`overlay-root ${busy ? 'is-busy' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`}><div className={`overlay-pill ${recording ? 'is-recording' : ''} ${processing ? 'is-processing' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`} aria-label={stateLabel} aria-live="polite" data-phase={overlay.phase}><span className="sr-only">{stateLabel}</span><div className="overlay-copy"><div className="overlay-state"><span className={`overlay-dot ${busy ? 'is-live' : ''}`} /><span className="overlay-label">{phaseLabel[overlay.phase]}</span><span className="overlay-mode">{overlay.mode === 'hold' ? 'hold' : 'toggle'}</span><span className="overlay-time">{formatDuration(liveElapsedMs)}</span></div><p>{overlay.message}</p></div>{cancelable ? <IconButton label="Cancel dictation" icon={X} onClick={() => void api.dictation.cancel()} /> : null}{recording ? <PillGraph level={overlay.level} elapsedMs={liveElapsedMs} /> : null}{processing ? <span className="overlay-processing" aria-label="Processing" /> : null}{recording && overlay.mode === 'toggle' ? <IconButton label="Finish dictation" icon={Check} onClick={() => void api.dictation.stop()} /> : null}{error ? <IconButton label="Dismiss error" icon={X} onClick={() => void api.dictation.cancel()} /> : null}</div></div>
 }
@@ -1131,6 +1194,7 @@ export function App() {
       if (candidate.kind === 'navigate' && candidate.page) setPage(candidate.page)
       if (candidate.kind === 'shortcut-unavailable') { void refresh(); notify(candidate.error ?? `Could not register ${candidate.shortcut ?? 'the shortcut'}. Choose another combination.`, 'error') }
       if (candidate.kind === 'shortcut-ready') { void refresh(); notify(`Global dictation shortcut ready: ${(candidate.shortcut ?? '').replaceAll('Control', 'Ctrl').replaceAll('Super', 'Win')}`, 'neutral') }
+      if (candidate.kind === 'shortcuts-ready') { void refresh(); notify('Push-to-talk and hands-free shortcuts are active globally.', 'neutral') }
     })
     if (!isOverlay && new URLSearchParams(window.location.search).get('smoke') === '1') void api.app.health()
     return () => { offState(); offOverlay(); offLevel(); offToast() }

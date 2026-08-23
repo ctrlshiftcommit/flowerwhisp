@@ -1,4 +1,5 @@
-export const DEFAULT_TOGGLE_SHORTCUT = 'Control+Shift+Space'
+export const DEFAULT_TOGGLE_SHORTCUT = 'Control+Super+Space'
+export const DEFAULT_HOLD_SHORTCUT = 'Control+Super'
 export const COPILOT_SHORTCUT = 'F23'
 
 const shortcutModifiers = new Set(['Control', 'CommandOrControl', 'Alt', 'Shift', 'Super'])
@@ -35,8 +36,10 @@ const isLetterOrNumber = (part: string): boolean => /^[A-Z0-9]$/.test(part)
 export const isShortcutModifier = (part: string): boolean => shortcutModifiers.has(part)
 
 export const SHORTCUT_REQUIREMENT = 'Use any combination with at least one modifier (Ctrl, Alt, Shift, or Win) and one final key. Function keys, Tab, Space, and the Windows Copilot key are supported.'
+export const HOLD_SHORTCUT_REQUIREMENT = 'Hold one or more modifier keys, a modifier plus a final key, or a function key. Dictation starts when the complete combination is down and finishes when you release it.'
 
 export interface ShortcutKeyEvent {
+  type?: 'keydown' | 'keyup'
   key: string
   code?: string
   ctrlKey?: boolean
@@ -127,4 +130,21 @@ export const isValidShortcut = (value: unknown): value is string => {
   if (keyParts.length > 1) return false
   if (keyParts.length !== 1) return false
   return parts.some(isShortcutModifier)
+}
+
+/**
+ * Hold-to-dictate is driven by a native key-down/key-up hook, so it can use
+ * modifier-only gestures such as Ctrl+Win as well as ordinary accelerators.
+ * A lone function key is also useful for remappable hardware and Copilot.
+ */
+export const isValidHoldShortcut = (value: unknown): value is string => {
+  if (typeof value !== 'string') return false
+  const parts = value.split('+').filter(Boolean)
+  if (parts.length === 0 || new Set(parts).size !== parts.length) return false
+  if (!parts.every((part) => isShortcutModifier(part) || shortcutKeys.has(part) || isLetterOrNumber(part) || isFunctionKey(part))) return false
+
+  const keyParts = parts.filter((part) => !isShortcutModifier(part))
+  if (keyParts.length > 1) return false
+  if (parts.some(isShortcutModifier)) return true
+  return keyParts.length === 1 && isFunctionKey(keyParts[0])
 }
