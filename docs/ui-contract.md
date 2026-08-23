@@ -160,12 +160,13 @@ the final text available for copying.
 
 ## Settings and secure-control behavior
 
-- `ShortcutRecorder` records keyboard modifiers and mouse buttons through a
-  named bridge method, displays conflicts, rejects invalid combinations, and
-  supports reset. It does not install the shortcut from the renderer.
-- If the brief's example defaults are shown, use Middle Click for hold and
-  Ctrl+Win+Space for toggle only as configurable examples. The renderer must
-  display the confirmed configured values and must not hardcode either chord.
+- `ShortcutRecorder` records one keyboard accelerator through a named bridge
+  method, displays whether the exact chord is registered, rejects invalid
+  combinations, and does not install the shortcut from the renderer.
+- The renderer must display the confirmed configured value and must not show a
+  second hardcoded hold or fallback chord. Ctrl, Alt, Shift, or Win plus one
+  key is required; the Windows Copilot key is allowed by itself when the OS
+  exposes it as F23.
 - `ProviderSelector` and `ModelSelector` are independent for transcription and
   LLM cleanup. A missing or removed model is an explicit unavailable state,
   not a silent fallback.

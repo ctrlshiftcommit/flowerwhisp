@@ -11,7 +11,7 @@ import type {
   TransformProfile,
   UsageDay,
 } from '../../shared/ipc'
-import { isValidShortcut } from '../../shared/shortcuts'
+import { DEFAULT_TOGGLE_SHORTCUT, isValidShortcut } from '../../shared/shortcuts'
 import { DEFAULT_CLEANUP_PROMPTS } from '../../shared/promptDefaults'
 
 export interface AppSnapshot {
@@ -35,12 +35,9 @@ export const defaultSettings: PublicSettings = {
   cleanupLevel: 'light',
   cleanupPrompts: { ...DEFAULT_CLEANUP_PROMPTS },
   defaultStyle: 'personal-casual',
-  // Keep the first-run accelerator on the stable Ctrl/Shift path. Windows
-  // reserves the Win/Super key for shell shortcuts, and Electron can reject
-  // or crash while registering a Super chord before the user has configured
-  // their own shortcut.
-  toggleShortcut: 'Control+Shift+Space',
-  holdShortcut: 'Control+Shift+Space',
+  // Keep the first-run accelerator on the stable Ctrl/Shift path. The exact
+  // configured value is the only global dictation shortcut we register.
+  toggleShortcut: DEFAULT_TOGGLE_SHORTCUT,
   microphoneLabel: 'System default microphone',
   localCommand: '',
   localWorkingDirectory: '',
@@ -141,7 +138,6 @@ export class JsonStateStore {
           ...mergedSettings,
           cleanupPrompts,
           toggleShortcut: isValidShortcut(mergedSettings.toggleShortcut) ? mergedSettings.toggleShortcut : defaults.settings.toggleShortcut,
-          holdShortcut: isValidShortcut(mergedSettings.holdShortcut) ? mergedSettings.holdShortcut : defaults.settings.holdShortcut,
         },
         records: Array.isArray(parsed.records) ? parsed.records : [],
         dictionary: Array.isArray(parsed.dictionary) ? parsed.dictionary : [],

@@ -36,7 +36,6 @@ export interface PublicSettings {
   cleanupPrompts: Record<CleanupLevel, string>
   defaultStyle: string
   toggleShortcut: string
-  holdShortcut: string
   microphoneLabel: string
   localCommand: string
   localWorkingDirectory: string
@@ -182,6 +181,7 @@ export type AppEventChannel =
   | 'recording:start'
   | 'recording:stop'
   | 'recording:cancel'
+  | 'shortcut:record'
   | 'overlay:state'
   | 'overlay:level'
   | 'toast'

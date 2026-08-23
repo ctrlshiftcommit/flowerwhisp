@@ -15,7 +15,6 @@ import {
   FloppyDisk,
   Gear,
   Info,
-  Keyboard,
   List,
   MagnifyingGlass,
   Microphone,
@@ -52,7 +51,8 @@ import type {
   TransformProfile,
 } from '../shared/ipc'
 import { DEFAULT_CLEANUP_PROMPTS } from '../shared/promptDefaults'
-import { isShortcutModifier, isValidShortcut, SHORTCUT_REQUIREMENT } from '../shared/shortcuts'
+import type { ShortcutKeyEvent } from '../shared/shortcuts'
+import { DEFAULT_TOGGLE_SHORTCUT, isShortcutModifier, isValidShortcut, SHORTCUT_REQUIREMENT, shortcutFromEvent } from '../shared/shortcuts'
 
 type NavIcon = PhosphorIcon
 
@@ -65,8 +65,7 @@ const emptySettings: PublicSettings = {
   cleanupLevel: 'light',
   cleanupPrompts: { ...DEFAULT_CLEANUP_PROMPTS },
   defaultStyle: 'personal-casual',
-  toggleShortcut: 'Control+Super+Space',
-  holdShortcut: 'Control+Shift+Space',
+  toggleShortcut: DEFAULT_TOGGLE_SHORTCUT,
   microphoneLabel: 'System default microphone',
   localCommand: '',
   localWorkingDirectory: '',
@@ -217,13 +216,12 @@ const pageTitles: Record<PageId, { title: string; subtitle: string }> = {
   settings: { title: 'Settings', subtitle: '' },
 }
 
-type SettingsSectionId = 'system' | 'general' | 'ai' | 'dictation' | 'privacy' | 'appearance'
+type SettingsSectionId = 'system' | 'general' | 'ai' | 'privacy' | 'appearance'
 
 const settingsSections: Array<{ id: SettingsSectionId; label: string; group: string }> = [
   { id: 'system', label: 'System', group: 'Application' },
   { id: 'general', label: 'General', group: 'Capture' },
   { id: 'ai', label: 'Providers', group: 'Capture' },
-  { id: 'dictation', label: 'Audio', group: 'Capture' },
   { id: 'privacy', label: 'Privacy', group: 'Application' },
   { id: 'appearance', label: 'Appearance', group: 'Application' },
 ]
@@ -258,59 +256,6 @@ const shortcutPartLabel = (part: string): string => {
 }
 
 const formatShortcut = (value: string): string => value.split('+').filter(Boolean).map(shortcutPartLabel).join(' + ')
-
-const shortcutKeyAliases: Record<string, string> = {
-  LaunchApp1: 'F23',
-  LaunchApp2: 'F24',
-  LaunchApplication1: 'F23',
-  LaunchApplication2: 'F24',
-  Copilot: 'F23',
-}
-
-const shortcutFromEvent = (event: KeyboardEvent): string => {
-  const isWindowsKey = event.metaKey
-    || event.key === 'Meta'
-    || event.key === 'OS'
-    || event.code === 'MetaLeft'
-    || event.code === 'MetaRight'
-    || event.getModifierState?.('OS') === true
-  const parts = [
-    event.ctrlKey ? 'Control' : '',
-    event.altKey ? 'Alt' : '',
-    event.shiftKey ? 'Shift' : '',
-    isWindowsKey ? 'Super' : '',
-  ].filter(Boolean)
-  const modifierKeys = new Set(['Control', 'Alt', 'Shift', 'Meta', 'OS', 'Super'])
-  const key = event.key
-  if (!modifierKeys.has(key)) {
-    const namedKeys: Record<string, string> = {
-      ' ': 'Space',
-      Escape: 'Escape',
-      Enter: 'Enter',
-      Tab: 'Tab',
-      Backspace: 'Backspace',
-      Delete: 'Delete',
-      Insert: 'Insert',
-      Home: 'Home',
-      End: 'End',
-      PageUp: 'PageUp',
-      PageDown: 'PageDown',
-      ArrowUp: 'Up',
-      ArrowDown: 'Down',
-      ArrowLeft: 'Left',
-      ArrowRight: 'Right',
-    }
-    const alias = shortcutKeyAliases[key] ?? shortcutKeyAliases[event.code]
-    const normalizedFromCode = event.code.startsWith('Key') && event.code.length === 4
-      ? event.code.slice(3).toUpperCase()
-      : event.code.startsWith('Digit') && event.code.length === 6
-        ? event.code.slice(5)
-        : ''
-    const normalized = namedKeys[key] ?? alias ?? normalizedFromCode ?? (key.length === 1 ? key.toUpperCase() : key.toUpperCase())
-    if (normalized && normalized !== 'UNIDENTIFIED') parts.push(normalized)
-  }
-  return parts.join('+')
-}
 
 const formatDate = (value: string): string =>
   new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(value))
@@ -361,11 +306,12 @@ const IconButton = ({
   </button>
 )
 
-const ShortcutRecorder = ({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => Promise<CommandResult> }) => {
+const ShortcutRecorder = ({ label, value, onChange, onListeningChange }: { label: string; value: string; onChange: (value: string) => Promise<CommandResult>; onListeningChange?: (listening: boolean) => void }) => {
   const [listening, setListening] = useState(false)
   const [pending, setPending] = useState('')
   const [error, setError] = useState('')
   const shortcutRecordingActive = useRef(false)
+  const modifierState = useRef(new Set<string>())
   const begin = async () => {
     if (shortcutRecordingActive.current) return
     const response = await api.settings.setShortcutRecording(true)
@@ -374,64 +320,113 @@ const ShortcutRecorder = ({ label, value, onChange }: { label: string; value: st
       return
     }
     shortcutRecordingActive.current = true
+    modifierState.current.clear()
     setPending('')
     setError('')
     setListening(true)
+    onListeningChange?.(true)
   }
-  const finish = useCallback(() => {
+  const finish = useCallback(async (): Promise<CommandResult | null> => {
+    let restoreResponse: CommandResult | null = null
     if (shortcutRecordingActive.current) {
       shortcutRecordingActive.current = false
-      void api.settings.setShortcutRecording(false)
+      restoreResponse = await api.settings.setShortcutRecording(false)
     }
     setListening(false)
+    modifierState.current.clear()
     setPending('')
-  }, [])
+    onListeningChange?.(false)
+    if (restoreResponse && !restoreResponse.ok) setError(restoreResponse.error ?? 'The saved shortcut could not be activated.')
+    return restoreResponse
+  }, [onListeningChange])
   const commit = useCallback(async (next: string) => {
     const response = await onChange(next)
     if (!response.ok) {
       setError(response.error ?? 'That shortcut could not be saved. Try another combination.')
       return
     }
-    finish()
+    await finish()
   }, [finish, onChange])
-  useEffect(() => {
-    if (!listening) return undefined
-
-    const onWindowKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat) return
-      event.preventDefault()
-      event.stopPropagation()
-      if (event.key === 'Escape') {
-        finish()
-        return
-      }
-      const next = shortcutFromEvent(event)
-      if (!next) return
-      const complete: boolean = isValidShortcut(next)
-      setPending(next)
-      if (!complete) {
-        const hasModifier = next.split('+').some(isShortcutModifier)
-        setError(hasModifier ? 'Keep holding the modifier and press one letter, number, function, or special key.' : SHORTCUT_REQUIREMENT)
-        return
-      }
-      setError('')
-      void commit(next)
+  const handleRecordedEvent = useCallback((event: ShortcutKeyEvent & { repeat?: boolean }) => {
+    if (event.repeat) return
+    const eventIsControl = event.key === 'Control' || event.code?.startsWith('Control')
+    const eventIsAlt = event.key === 'Alt' || event.code?.startsWith('Alt')
+    const eventIsShift = event.key === 'Shift' || event.code?.startsWith('Shift')
+    const eventIsWindows = Boolean(
+      event.metaKey
+        || event.key === 'Meta'
+        || event.key === 'OS'
+        || event.key === 'Windows'
+        || event.key === 'Win'
+        || event.code === 'MetaLeft'
+        || event.code === 'MetaRight'
+        || event.getModifierState?.('OS')
+        || event.getModifierState?.('Meta'),
+    )
+    const hasModifier = Boolean(event.ctrlKey || event.altKey || event.shiftKey || eventIsWindows || eventIsControl || eventIsAlt || eventIsShift)
+    if (event.key === 'Escape' && !hasModifier) {
+      void finish()
+      return
     }
 
-    window.addEventListener('keydown', onWindowKeyDown, true)
+    // A recorder receives one keydown per physical key. Build the chord from
+    // the modifier state on that event, then wait for a non-modifier key
+    // before validating or committing it. This prevents intermediate values
+    // such as Shift+Win from being treated as a broken shortcut and lets
+    // Ctrl+Win+Space be committed as one complete accelerator.
+    const finalKey = shortcutFromEvent({
+      ...event,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+      metaKey: false,
+      getModifierState: undefined,
+    })
+    const modifiers = new Set<string>()
+    if (event.ctrlKey || eventIsControl) modifiers.add('Control')
+    if (event.altKey || eventIsAlt) modifiers.add('Alt')
+    if (event.shiftKey || eventIsShift) modifiers.add('Shift')
+    if (eventIsWindows) modifiers.add('Super')
+    modifierState.current = modifiers
+    const orderedModifiers = ['Control', 'Alt', 'Shift', 'Super'].filter((part) => modifiers.has(part))
+    const next = [...orderedModifiers, ...(finalKey ? [finalKey] : [])].join('+')
+    if (!next) return
+    const complete: boolean = isValidShortcut(next)
+    setPending(next)
+    if (!finalKey) {
+      // Modifier-only states are expected while the user is still holding
+      // the chord. Keep the recorder calm until its final key arrives.
+      setError('')
+      return
+    }
+    if (!complete) {
+      setError(next.split('+').some(isShortcutModifier) ? 'That final key is not supported. Try a letter, number, function key, Tab, Space, or another special key.' : SHORTCUT_REQUIREMENT)
+      return
+    }
+    setError('')
+    void commit(next)
+  }, [commit, finish])
+  useEffect(() => {
+    if (!listening) return undefined
+    const offShortcut = api.on('shortcut:record', (payload) => {
+      if (!payload || typeof payload !== 'object') return
+      handleRecordedEvent(payload as ShortcutKeyEvent & { repeat?: boolean })
+    })
     return () => {
-      window.removeEventListener('keydown', onWindowKeyDown, true)
+      offShortcut()
       if (shortcutRecordingActive.current) {
         shortcutRecordingActive.current = false
         void api.settings.setShortcutRecording(false)
       }
+      onListeningChange?.(false)
     }
-  }, [commit, finish, listening])
+  }, [finish, handleRecordedEvent, listening, onListeningChange])
 
   const display = pending || value
+  const keyCount = display.split('+').filter(Boolean).length
   return (
     <button
-      className={`shortcut-recorder ${listening ? 'is-listening' : ''}`}
+      className={`shortcut-recorder ${listening ? 'is-listening' : ''} ${keyCount >= 5 ? 'is-long' : ''}`}
       type="button"
       aria-label={`${label}. ${listening ? 'Press the key combination now.' : 'Click to change shortcut.'}`}
       aria-pressed={listening}
@@ -450,61 +445,63 @@ const ShortcutRecorder = ({ label, value, onChange }: { label: string; value: st
   )
 }
 
-const WaveBars = ({ level = 0, compact = false }: { level?: number; compact?: boolean }) => {
-  const targetLevel = useRef(Math.max(0, Math.min(1, level)))
-  const currentLevel = useRef(targetLevel.current)
-  const [displayLevel, setDisplayLevel] = useState(targetLevel.current)
+const clampLevel = (value: number): number => Math.max(0, Math.min(1, value))
+
+const useSignalFrame = (level: number, smoothing = 0.2) => {
+  const targetLevel = useRef(clampLevel(level))
+  const displayLevel = useRef(targetLevel.current)
+  const phase = useRef(0)
+  const [frame, setFrame] = useState({ level: displayLevel.current, phase: 0 })
 
   useEffect(() => {
-    targetLevel.current = Math.max(0, Math.min(1, level))
+    targetLevel.current = clampLevel(level)
   }, [level])
 
   useEffect(() => {
-    let frame = 0
-    const tick = () => {
-      const next = currentLevel.current + (targetLevel.current - currentLevel.current) * 0.2
-      currentLevel.current = next
-      setDisplayLevel(next)
-      frame = window.requestAnimationFrame(tick)
+    let raf = 0
+    let lastPaint = 0
+    const tick = (now: number) => {
+      // Thirty updates per second is enough for a readable meter and keeps the
+      // overlay inexpensive while the microphone is active.
+      if (now - lastPaint >= 33) {
+        displayLevel.current += (targetLevel.current - displayLevel.current) * smoothing
+        phase.current += 0.11
+        setFrame({ level: displayLevel.current, phase: phase.current })
+        lastPaint = now
+      }
+      raf = window.requestAnimationFrame(tick)
     }
-    frame = window.requestAnimationFrame(tick)
-    return () => window.cancelAnimationFrame(frame)
-  }, [])
+    raf = window.requestAnimationFrame(tick)
+    return () => window.cancelAnimationFrame(raf)
+  }, [smoothing])
 
+  return frame
+}
+
+const WaveBars = ({ level = 0, compact = false }: { level?: number; compact?: boolean }) => {
+  const frame = useSignalFrame(level)
   const count = compact ? 9 : 13
-  return <div className={`wave-bars ${compact ? 'wave-bars-compact' : ''}`} aria-label={displayLevel > 0.03 ? 'Microphone signal detected' : 'Microphone waiting'}>
+  const activity = Math.max(0.16, Math.min(1, frame.level * 1.9))
+  return <div className={`wave-bars ${compact ? 'wave-bars-compact' : ''}`} aria-label={frame.level > 0.03 ? 'Microphone signal detected' : 'Microphone waiting'}>
     {Array.from({ length: count }, (_, index) => {
-      const shape = 0.35 + Math.abs(Math.sin(index * 1.55)) * 0.65
-      const height = compact ? 5 + displayLevel * (16 * shape) : 6 + displayLevel * (30 * shape)
+      const travellingShape = Math.abs(Math.sin(index * 0.72 + frame.phase * 0.82))
+      const shape = 0.3 + Math.pow(travellingShape, 1.35) * 0.7
+      const height = compact ? 4 + activity * (17 * shape) : 6 + activity * (31 * shape)
       const normalized = Math.max(0, Math.min(1, height / (compact ? 22 : 36)))
-      return <span key={index} style={{ height: `${height.toFixed(2)}px`, transform: `scaleY(${0.72 + normalized * 0.28})`, opacity: `${0.52 + normalized * 0.48}` }} />
+      return <span key={index} style={{ height: `${height.toFixed(2)}px`, transform: `scaleY(${0.82 + normalized * 0.18})`, opacity: `${0.58 + normalized * 0.42}` }} />
     })}
   </div>
 }
 
 const PillGraph = ({ level = 0, elapsedMs = 0 }: { level?: number; elapsedMs?: number }) => {
-  const targetLevel = useRef(Math.max(0, Math.min(1, level)))
-  const displayLevel = useRef(targetLevel.current)
-  const animationPhase = useRef(0)
-  const [frame, setFrame] = useState({ level: displayLevel.current, phase: 0 })
-
-  useEffect(() => {
-    targetLevel.current = Math.max(0, Math.min(1, level))
-  }, [level])
-
-  useEffect(() => {
-    let raf = 0
-    const tick = () => {
-      displayLevel.current += (targetLevel.current - displayLevel.current) * 0.22
-      animationPhase.current += 0.075
-      setFrame({ level: displayLevel.current, phase: animationPhase.current })
-      raf = window.requestAnimationFrame(tick)
-    }
-    raf = window.requestAnimationFrame(tick)
-    return () => window.cancelAnimationFrame(raf)
-  }, [])
-
-  return <div className="pill-visualizer" aria-label={frame.level > 0.03 ? 'Live microphone level' : 'Microphone waiting'}><div className="pill-graph" aria-hidden="true">{Array.from({ length: 12 }, (_, index) => { const envelope = 0.32 + Math.pow(Math.abs(Math.sin(index * 0.72 + frame.phase)), 1.45) * 0.68; const breathingFloor = 0.14 + Math.abs(Math.sin(index * 0.54 + frame.phase * 1.8)) * 0.12; const visibleLevel = Math.min(1, Math.max(breathingFloor, frame.level * 1.55)); const height = 4 + visibleLevel * envelope * 23; return <span key={index} style={{ height: `${height.toFixed(2)}px`, opacity: `${0.72 + Math.min(0.28, visibleLevel * envelope)}`, animationDelay: `${index * -65}ms` }} /> })}</div><span className="pill-time">{formatDuration(elapsedMs)}</span></div>
+  const frame = useSignalFrame(level, 0.24)
+  const activity = Math.max(0.18, Math.min(1, frame.level * 2.15))
+  return <div className="pill-visualizer" aria-label={frame.level > 0.03 ? 'Live microphone level' : 'Microphone waiting'}><div className="pill-graph" aria-hidden="true">{Array.from({ length: 12 }, (_, index) => {
+    const envelope = 0.3 + Math.pow(Math.abs(Math.sin(index * 0.78 + frame.phase)), 1.35) * 0.7
+    const height = 3 + activity * envelope * 25
+    const scale = 0.88 + envelope * 0.12
+    return <span key={index} style={{ height: `${height.toFixed(2)}px`, transform: `scaleY(${scale.toFixed(3)})`, opacity: `${0.68 + Math.min(0.32, activity * envelope)}` }} />
+  })}</div><span className="pill-time">{formatDuration(elapsedMs)}</span></div>
 }
 
 const Notice = ({ message, tone, onDismiss }: { message: string; tone: 'success' | 'error' | 'neutral'; onDismiss: () => void }) => (
@@ -911,10 +908,10 @@ const TransformsPage = ({ transforms, onRefresh }: { transforms: TransformProfil
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [instructions, setInstructions] = useState('')
-  const save = async (event: FormEvent) => { event.preventDefault(); const response = await api.transforms.save({ id: `custom-${Date.now()}`, name, description, instructions, shortcut: 'Control+Alt+L', enabled: true }); if (response.ok) { setName(''); setDescription(''); setInstructions(''); setShowForm(false); onRefresh() } }
+  const save = async (event: FormEvent) => { event.preventDefault(); const response = await api.transforms.save({ id: `custom-${Date.now()}`, name, description, instructions, shortcut: '', enabled: true }); if (response.ok) { setName(''); setDescription(''); setInstructions(''); setShowForm(false); onRefresh() } }
   const builtInCards = [
-    { id: 'polish', name: 'Polish', description: 'Improve clarity and conciseness', fallbackShortcut: 'Super+Alt+C' },
-    { id: 'prompt-engineer', name: 'Prompt Engineer', description: '**Title** (1 concise line…', fallbackShortcut: 'Super+Alt+X' },
+    { id: 'polish', name: 'Polish', description: 'Improve clarity and conciseness' },
+    { id: 'prompt-engineer', name: 'Prompt Engineer', description: '**Title** (1 concise line…' },
   ]
   const builtInTransforms = builtInCards.map((card) => ({ card, transform: transforms.find((candidate) => candidate.id === card.id) }))
   const customTransforms = transforms.filter((transform) => !transform.builtIn)
@@ -929,13 +926,13 @@ const TransformsPage = ({ transforms, onRefresh }: { transforms: TransformProfil
     return response
   }
   return <div className="page page-transforms reference-transforms-page">
-     <div className="transform-options"><span>Enable a transform from its card when you want it available.</span><span className="transform-key-help">Use the configured transform shortcut to view changes.</span></div>
+     <div className="transform-options"><span>Enable a transform from its card when you want it available.</span><span className="transform-key-help">Edit the prompt from its card before using it.</span></div>
     <section className="transform-promo"><h2>Transform works anywhere you write</h2><p>Apply a Transform to rewrite, clean up, or restructure text after you dictate.</p><div><Button variant="secondary" onClick={() => setShowForm((value) => !value)}>Try it out</Button><button type="button" onClick={() => setShowHowItWorks(true)}>How it works</button></div></section>
     <div className="transform-heading"><h2>My Transforms</h2><button type="button" onClick={() => void reset()}>↶ &nbsp; Reset to defaults</button><Button variant="primary" onClick={() => setShowForm(true)}>Create New</Button></div>
     {showForm ? <form className="transform-form" onSubmit={save}><div className="field-grid"><div><label htmlFor="transform-name">Name</label><input id="transform-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Make it concise" required /></div><div><label htmlFor="transform-description">Description</label><input id="transform-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="One-line explanation" /></div></div><label htmlFor="transform-instructions">Prompt</label><textarea id="transform-instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} rows={4} placeholder="Describe how Flow should rewrite the selected text." required /><div className="form-actions"><Button variant="primary" type="submit" icon={Check}>Save</Button><Button variant="quiet" onClick={() => setShowForm(false)}>Cancel</Button></div></form> : null}
     <div className="transform-card-grid">
-      {builtInTransforms.map(({ card, transform }) => transform ? <div className="transform-card" key={transform.id}><div className="transform-shortcut">{formatShortcut(transform.shortcut || card.fallbackShortcut).split(' + ').map((part) => <kbd key={part}>{part}</kbd>)}</div><h3>{card.name}</h3><p>{card.description}</p><div className="transform-card-actions"><Button variant="quiet" onClick={() => setEditingTransform(transform)}>Edit prompt</Button><Toggle label={card.name} checked={transform.enabled} onChange={(value) => { void api.transforms.save({ ...transform, enabled: value }).then(onRefresh) }} /></div></div> : null)}
-      {customTransforms.map((transform) => <div className="transform-card" key={transform.id}><div className="transform-shortcut">{formatShortcut(transform.shortcut).split(' + ').map((part) => <kbd key={part}>{part}</kbd>)}</div><h3>{transform.name}</h3><p>{transform.description || 'Custom rewrite instruction'}</p><div className="transform-card-actions"><Button variant="quiet" onClick={() => setEditingTransform(transform)}>Edit prompt</Button><Toggle label={transform.name} checked={transform.enabled} onChange={(value) => { void api.transforms.save({ ...transform, enabled: value }).then(onRefresh) }} /><IconButton label={`Delete ${transform.name}`} icon={Trash} onClick={async () => { await api.transforms.delete(transform.id); onRefresh() }} /></div></div>)}
+       {builtInTransforms.map(({ card, transform }) => transform ? <div className="transform-card" key={transform.id}><h3>{card.name}</h3><p>{card.description}</p><div className="transform-card-actions"><Button variant="quiet" onClick={() => setEditingTransform(transform)}>Edit prompt</Button><Toggle label={card.name} checked={transform.enabled} onChange={(value) => { void api.transforms.save({ ...transform, enabled: value }).then(onRefresh) }} /></div></div> : null)}
+       {customTransforms.map((transform) => <div className="transform-card" key={transform.id}><h3>{transform.name}</h3><p>{transform.description || 'Custom rewrite instruction'}</p><div className="transform-card-actions"><Button variant="quiet" onClick={() => setEditingTransform(transform)}>Edit prompt</Button><Toggle label={transform.name} checked={transform.enabled} onChange={(value) => { void api.transforms.save({ ...transform, enabled: value }).then(onRefresh) }} /><IconButton label={`Delete ${transform.name}`} icon={Trash} onClick={async () => { await api.transforms.delete(transform.id); onRefresh() }} /></div></div>)}
       <button className="transform-card create-transform-card" type="button" onClick={() => setShowForm(true)}><span className="transform-plus">＋</span><h3>Create your own</h3><p>Upload your own prompt</p></button>
     </div>
     {showHowItWorks ? <HowItWorksModal onClose={() => setShowHowItWorks(false)} onTryItOut={() => { setShowHowItWorks(false); setShowForm(true) }} /> : null}
@@ -958,20 +955,11 @@ const ScratchpadPage = ({ value, onRefresh }: { value: string; onRefresh: () => 
   </div>
 }
 
-const ShortcutEditorModal = ({ draft, onClose, onChange }: { draft: PublicSettings; onClose: () => void; onChange: (key: 'toggleShortcut', value: string) => Promise<CommandResult> }) => {
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose])
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="shortcut-modal" role="dialog" aria-modal="true" aria-labelledby="shortcut-modal-title"><div className="reference-modal-heading"><div><span className="detail-kicker">Settings</span><h2 id="shortcut-modal-title">Shortcuts</h2><p>Change the shortcuts that this build actually supports.</p></div><IconButton label="Close shortcuts" icon={X} onClick={onClose} /></div><div className="shortcut-editor-list"><div className="shortcut-editor-row"><div><strong>Push to talk</strong><span>Hold Middle Click and speak inside the Flow window.</span></div><span className="shortcut-token">Middle Click</span></div><div className="shortcut-editor-row"><div><strong>Hands-free mode</strong><span>Toggle dictation on and off from anywhere.</span></div><ShortcutRecorder label="Hands-free mode shortcut" value={draft.toggleShortcut} onChange={(value) => onChange('toggleShortcut', value)} /></div><div className="shortcut-editor-guidance"><Keyboard size={16} /><span>{SHORTCUT_REQUIREMENT} Windows Copilot keys are captured as F23 when Windows exposes them to the app.</span></div></div><div className="shortcut-modal-footer"><span>Press Esc to close</span><Button variant="primary" onClick={onClose}>Done</Button></div></section></div>
-}
-
 const SettingsPage = ({ data, onRefresh, onThemePreview }: { data: BootstrapPayload; onRefresh: () => void; onThemePreview: (theme: PublicSettings['theme']) => void }) => {
   const [draft, setDraft] = useState(data.settings)
   const [key, setKey] = useState('')
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('system')
-  const [showShortcutEditor, setShowShortcutEditor] = useState(false)
+  const [shortcutListening, setShortcutListening] = useState(false)
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [draftDirty, setDraftDirty] = useState(false)
   useEffect(() => { if (!draftDirty) setDraft(data.settings) }, [data.settings, draftDirty])
@@ -1002,19 +990,24 @@ const SettingsPage = ({ data, onRefresh, onThemePreview }: { data: BootstrapPayl
         </SettingsSection>
       case 'general':
         const requestedShortcut = draft.toggleShortcut
-        const shortcutFallback = data.shortcutRegistered && data.registeredShortcut !== requestedShortcut
-        const shortcutDescription = shortcutFallback
-          ? `Requested ${formatShortcut(requestedShortcut)} · active fallback ${formatShortcut(data.registeredShortcut)}`
-          : 'Use the global toggle to start or finish a dictation.'
-        const shortcutStatus = data.shortcutRegistered
-          ? shortcutFallback ? `Active fallback: ${formatShortcut(data.registeredShortcut)}` : 'Registered globally'
-          : 'Not registered yet'
+        const shortcutMatches = data.shortcutRegistered && data.registeredShortcut === requestedShortcut
+        const shortcutDescription = shortcutListening
+          ? 'Press the complete combination now. Press Escape by itself to cancel.'
+          : shortcutMatches
+          ? 'Press this exact combination anywhere to start or finish one dictation.'
+          : data.shortcutRegistered
+            ? `The saved shortcut is not active. Active: ${formatShortcut(data.registeredShortcut)}.`
+            : 'No global shortcut is active. Hold every listed modifier, then press the final key.'
+        const shortcutStatus = shortcutListening ? 'Listening for keys…' : shortcutMatches ? 'Active globally' : data.shortcutRegistered ? 'Different shortcut active' : 'Unavailable'
         return <SettingsSection id="general" title="General" description="">
-          <SettingRow label="Toggle dictation" description={shortcutDescription}><div className="shortcut-setting-control"><ShortcutRecorder label="Toggle dictation shortcut" value={requestedShortcut} onChange={(value) => persist({ toggleShortcut: value })} /><span className={`shortcut-status ${data.shortcutRegistered ? 'is-ready' : 'is-unavailable'}`} role="status"><span className="shortcut-status-dot" />{shortcutStatus}</span></div></SettingRow>
-          <SettingRow label="Shortcuts" description="Push to talk, hands-free mode, and transcript actions."><Button variant="secondary" icon={Keyboard} onClick={() => setShowShortcutEditor(true)}>Edit shortcuts</Button></SettingRow>
-          <SettingRow label="Hold to dictate" description="Available inside FlowerWhisp only; system-wide key-up support is not available in this Electron build."><span className="setting-value"><kbd>Middle Click</kbd><span>Dictation page</span></span></SettingRow>
-          <SettingRow label="Microphone" description="Used by the browser capture surface."><span className="setting-value">{data.settings.microphoneLabel || 'System default microphone'}</span></SettingRow>
-          <SettingRow label="Dictation language" description="Language sent to the transcription provider."><select value={draft.language} aria-label="Dictation language" onChange={(event) => update('language', event.target.value)}><option value="en">English</option><option value="hi">Hindi</option><option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option></select></SettingRow>
+          <SettingGroup title="Global dictation">
+            <SettingRow label="Dictation shortcut" description={shortcutDescription}><div className="shortcut-setting-control"><ShortcutRecorder label="Global dictation shortcut" value={requestedShortcut} onChange={(value) => persist({ toggleShortcut: value })} onListeningChange={setShortcutListening} /><span className={`shortcut-status ${shortcutListening ? 'is-listening' : shortcutMatches ? 'is-ready' : 'is-unavailable'}`} role="status"><span className="shortcut-status-dot" />{shortcutStatus}</span></div></SettingRow>
+            <div className="shortcut-editor-guidance"><Info size={16} /><span>{SHORTCUT_REQUIREMENT} The displayed combination is the one shortcut FlowerWhisp listens for.</span></div>
+          </SettingGroup>
+          <SettingGroup title="Capture">
+            <SettingRow label="Microphone" description="Used by the browser capture surface."><span className="setting-value">{data.settings.microphoneLabel || 'System default microphone'}</span></SettingRow>
+            <SettingRow label="Dictation language" description="Language sent to the transcription provider."><select value={draft.language} aria-label="Dictation language" onChange={(event) => update('language', event.target.value)}><option value="en">English</option><option value="hi">Hindi</option><option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option></select></SettingRow>
+          </SettingGroup>
         </SettingsSection>
       case 'ai':
         return <SettingsSection id="ai" title="Providers" description="">
@@ -1026,20 +1019,19 @@ const SettingsPage = ({ data, onRefresh, onThemePreview }: { data: BootstrapPayl
           <SettingRow label="LLM cleanup provider" description=""><select value={draft.llmProvider} onChange={(event) => update('llmProvider', event.target.value as PublicSettings['llmProvider'])}><option value="none">Off</option><option value="groq">Groq text cleanup</option></select></SettingRow>
           <SettingRow label="LLM model" description=""><input value={draft.llmModel} onChange={(event) => update('llmModel', event.target.value)} /></SettingRow>
         </SettingsSection>
-      case 'dictation':
-        return <SettingsSection id="dictation" title="Audio" description="">
-          <SettingRow label="Cleanup level" description=""><select value={draft.cleanupLevel} onChange={(event) => update('cleanupLevel', event.target.value as CleanupLevel)}><option value="none">None</option><option value="light">Light</option><option value="medium">Medium</option></select></SettingRow>
-          <SettingRow label="Default style" description=""><select value={draft.defaultStyle} onChange={(event) => update('defaultStyle', event.target.value)}>{data.styles.map((style) => <option value={style.id} key={style.id}>{style.name}</option>)}</select></SettingRow>
-          <SettingRow label="Retention" description=""><select value={draft.retention} onChange={(event) => update('retention', event.target.value as PublicSettings['retention'])}><option value="forever">Keep forever</option><option value="24h">Delete after 24 hours</option><option value="never">Never store transcript text</option></select></SettingRow>
-        </SettingsSection>
       case 'privacy':
-        return <SettingsSection id="privacy" title="Privacy" description=""><div className="privacy-setting"><ShieldCheck size={21} /><div><strong>Privacy</strong><span>Audio and transcripts stay on this device unless a cloud provider is selected.</span></div></div></SettingsSection>
+        return <SettingsSection id="privacy" title="Privacy" description="">
+          <div className="privacy-setting"><ShieldCheck size={21} /><div><strong>Privacy</strong><span>Audio and transcripts stay on this device unless a cloud provider is selected.</span></div></div>
+          <SettingGroup title="Data retention">
+            <SettingRow label="Retention" description="Control how long source recordings and transcript history remain available."><select value={draft.retention} onChange={(event) => update('retention', event.target.value as PublicSettings['retention'])}><option value="forever">Keep forever</option><option value="24h">Delete after 24 hours</option><option value="never">Never store transcript text</option></select></SettingRow>
+          </SettingGroup>
+        </SettingsSection>
       case 'appearance':
         return <SettingsSection id="appearance" title="Appearance" description=""><SettingRow label="Theme" description=""><div className="theme-choice" role="radiogroup" aria-label="Color theme"><button type="button" className={draft.theme === 'light' ? 'is-selected' : ''} aria-pressed={draft.theme === 'light'} onClick={() => selectTheme('light')}><Sun size={16} /> Light</button><button type="button" className={draft.theme === 'dark' ? 'is-selected' : ''} aria-pressed={draft.theme === 'dark'} onClick={() => selectTheme('dark')}><Moon size={16} /> Dark</button><button type="button" className={draft.theme === 'system' ? 'is-selected' : ''} aria-pressed={draft.theme === 'system'} onClick={() => selectTheme('system')}><Desktop size={16} /> System</button></div></SettingRow></SettingsSection>
     }
   }
   const statusText = saveState === 'saving' ? 'Saving…' : saveState === 'error' ? 'Could not save this setting.' : saveState === 'saved' ? 'Saved locally.' : 'Changes are stored locally.'
-  return <><div className="page page-settings"><div className="settings-layout"><nav className="settings-index" aria-label="Settings sections">{['Capture', 'Application'].map((group) => <div className="settings-index-group" key={group}><span>{group}</span>{settingsSections.filter((section) => section.group === group).map((section) => <button type="button" className={activeSection === section.id ? 'is-selected' : ''} aria-current={activeSection === section.id ? 'page' : undefined} key={section.id} onClick={() => setActiveSection(section.id)}><span>{section.label}</span><CaretRight size={13} /></button>)}</div>)}</nav><div className="settings-content">{renderActiveSection()}<div className="settings-save"><Button variant="primary" icon={FloppyDisk} onClick={() => void save()} disabled={saveState === 'saving'}>Save settings</Button><span>{statusText}</span></div></div></div></div>{showShortcutEditor ? <ShortcutEditorModal draft={draft} onClose={() => setShowShortcutEditor(false)} onChange={(keyName, value) => persist({ [keyName]: value } as Partial<PublicSettings>)} /> : null}</>
+  return <div className="page page-settings"><div className="settings-layout"><nav className="settings-index" aria-label="Settings sections">{['Capture', 'Application'].map((group) => <div className="settings-index-group" key={group}><span>{group}</span>{settingsSections.filter((section) => section.group === group).map((section) => <button type="button" className={activeSection === section.id ? 'is-selected' : ''} aria-current={activeSection === section.id ? 'page' : undefined} key={section.id} onClick={() => setActiveSection(section.id)}><span>{section.label}</span><CaretRight size={13} /></button>)}</div>)}</nav><div className="settings-content">{renderActiveSection()}<div className="settings-save"><Button variant="primary" icon={FloppyDisk} onClick={() => void save()} disabled={saveState === 'saving'}>Save settings</Button><span>{statusText}</span></div></div></div></div>
 }
 
 const SettingsSection = ({ id, title, description, children }: { id: string; title: string; description: string; children: ReactNode }) => <section className="settings-section" id={id}><div className="settings-section-header"><h2>{title}</h2>{description ? <p>{description}</p> : null}</div>{children}</section>
@@ -1051,6 +1043,7 @@ const EmptyState = ({ icon: Icon, title, body, action, onAction }: { icon: NavIc
 const OverlayPill = ({ overlay }: { overlay: OverlayState }) => {
   const busy = ['starting', 'recording', 'stopping', 'transcribing', 'processing', 'inserting'].includes(overlay.phase)
   const recording = overlay.phase === 'recording'
+  const cancelable = overlay.phase === 'starting' || recording
   const processing = ['starting', 'stopping', 'transcribing', 'processing', 'inserting'].includes(overlay.phase)
   const ready = overlay.phase === 'ready'
   const error = overlay.phase === 'error'
@@ -1076,7 +1069,7 @@ const OverlayPill = ({ overlay }: { overlay: OverlayState }) => {
 
   if (resting) return <div className="overlay-root is-resting" role="status" aria-label="Flow is ready"><div className="overlay-pill is-idle"><span className="overlay-idle-dot" /><span className="sr-only">Flow is ready</span></div></div>
   const stateLabel = `${phaseLabel[overlay.phase]}${overlay.message ? `: ${overlay.message}` : ''}`
-  return <div className={`overlay-root ${busy ? 'is-busy' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`}><div className={`overlay-pill ${recording ? 'is-recording' : ''} ${processing ? 'is-processing' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`} aria-label={stateLabel} aria-live="polite" data-phase={overlay.phase}><span className="sr-only">{stateLabel}</span><div className="overlay-copy"><div className="overlay-state"><span className={`overlay-dot ${busy ? 'is-live' : ''}`} /><span className="overlay-label">{phaseLabel[overlay.phase]}</span><span className="overlay-mode">{overlay.mode === 'hold' ? 'hold' : 'toggle'}</span><span className="overlay-time">{formatDuration(liveElapsedMs)}</span></div><p>{overlay.message}</p></div>{busy ? <IconButton label="Cancel dictation" icon={X} onClick={() => void api.dictation.cancel()} /> : null}{recording ? <PillGraph level={overlay.level} elapsedMs={liveElapsedMs} /> : null}{processing ? <span className="overlay-processing" aria-label="Processing" /> : null}{recording && overlay.mode === 'toggle' ? <IconButton label="Finish dictation" icon={Check} onClick={() => void api.dictation.stop()} /> : null}{ready ? <><IconButton label="Copy transcript" icon={Copy} onClick={() => void api.dictation.copy(overlay.result)} /><IconButton label="Send transcript to Scratchpad" icon={NotePencil} onClick={() => void api.dictation.sendToScratchpad(overlay.result)} /></> : null}{error ? <IconButton label="Dismiss error" icon={X} onClick={() => void api.dictation.cancel()} /> : null}</div></div>
+  return <div className={`overlay-root ${busy ? 'is-busy' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`}><div className={`overlay-pill ${recording ? 'is-recording' : ''} ${processing ? 'is-processing' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`} aria-label={stateLabel} aria-live="polite" data-phase={overlay.phase}><span className="sr-only">{stateLabel}</span><div className="overlay-copy"><div className="overlay-state"><span className={`overlay-dot ${busy ? 'is-live' : ''}`} /><span className="overlay-label">{phaseLabel[overlay.phase]}</span><span className="overlay-mode">{overlay.mode === 'hold' ? 'hold' : 'toggle'}</span><span className="overlay-time">{formatDuration(liveElapsedMs)}</span></div><p>{overlay.message}</p></div>{cancelable ? <IconButton label="Cancel dictation" icon={X} onClick={() => void api.dictation.cancel()} /> : null}{recording ? <PillGraph level={overlay.level} elapsedMs={liveElapsedMs} /> : null}{processing ? <span className="overlay-processing" aria-label="Processing" /> : null}{recording && overlay.mode === 'toggle' ? <IconButton label="Finish dictation" icon={Check} onClick={() => void api.dictation.stop()} /> : null}{error ? <IconButton label="Dismiss error" icon={X} onClick={() => void api.dictation.cancel()} /> : null}</div></div>
 }
 
 export function App() {
@@ -1091,6 +1084,8 @@ export function App() {
   const [playingId, setPlayingId] = useState<string | null>(null)
   const playingAudioRef = useRef<HTMLAudioElement | null>(null)
   const captureRef = useRef<{ sessionId: string; recorder: MediaRecorder; stream: MediaStream; chunks: Blob[]; startedAt: number; audioContext: AudioContext | null; levelTimer: number | null; cancelled: boolean } | null>(null)
+  const pendingStopSessionsRef = useRef(new Set<string>())
+  const pendingCancelSessionsRef = useRef(new Set<string>())
 
   useEffect(() => {
     document.title = 'Flow'
@@ -1131,11 +1126,11 @@ export function App() {
     })
     const offToast = api.on('toast', (payload) => {
       if (!payload || typeof payload !== 'object') return
-      const candidate = payload as { kind?: string; page?: PageId; shortcut?: string }
+      const candidate = payload as { kind?: string; page?: PageId; shortcut?: string; error?: string }
       if (candidate.kind === 'refresh' || candidate.kind === 'scratchpad-updated') void refresh()
       if (candidate.kind === 'navigate' && candidate.page) setPage(candidate.page)
-      if (candidate.kind === 'shortcut-unavailable') notify(`Could not register ${candidate.shortcut ?? 'the shortcut'}. Use the Start button or tray.`, 'error')
-      if (candidate.kind === 'shortcut-ready') notify(`Global toggle ready: ${(candidate.shortcut ?? '').replaceAll('Control', 'Ctrl').replaceAll('Super', 'Win')}`, 'neutral')
+      if (candidate.kind === 'shortcut-unavailable') { void refresh(); notify(candidate.error ?? `Could not register ${candidate.shortcut ?? 'the shortcut'}. Choose another combination.`, 'error') }
+      if (candidate.kind === 'shortcut-ready') { void refresh(); notify(`Global dictation shortcut ready: ${(candidate.shortcut ?? '').replaceAll('Control', 'Ctrl').replaceAll('Super', 'Win')}`, 'neutral') }
     })
     if (!isOverlay && new URLSearchParams(window.location.search).get('smoke') === '1') void api.app.health()
     return () => { offState(); offOverlay(); offLevel(); offToast() }
@@ -1175,6 +1170,15 @@ export function App() {
       }
       recorder.onerror = () => { api.audio.reportError(capture.sessionId, 'The microphone recorder stopped unexpectedly.'); cleanupCapture() }
       recorder.start(250)
+      if (pendingCancelSessionsRef.current.delete(capture.sessionId)) {
+        capture.cancelled = true
+        window.setTimeout(() => { if (captureRef.current === capture && recorder.state === 'recording') recorder.stop() }, 0)
+      } else if (pendingStopSessionsRef.current.delete(capture.sessionId)) {
+        // The global shortcut can be pressed again before getUserMedia has
+        // finished. Defer the stop until MediaRecorder has actually entered
+        // its recording state so the second press is never lost.
+        window.setTimeout(() => { if (captureRef.current === capture && recorder.state === 'recording') recorder.stop() }, 0)
+      }
       const audioContext = new AudioContext()
       capture.audioContext = audioContext
       const analyser = audioContext.createAnalyser()
@@ -1210,19 +1214,29 @@ export function App() {
 
   const stopCapture = useCallback((payload: unknown) => {
     const capture = captureRef.current
-    if (!capture || !payload || typeof payload !== 'object') return
+    if (!payload || typeof payload !== 'object') return
     const candidate = payload as { sessionId?: unknown }
+    if (typeof candidate.sessionId !== 'string') return
+    if (!capture) {
+      pendingStopSessionsRef.current.add(candidate.sessionId)
+      return
+    }
     if (candidate.sessionId !== capture.sessionId) return
-    capture.recorder.stop()
+    if (capture.recorder.state === 'recording') capture.recorder.stop()
   }, [])
 
   const cancelCapture = useCallback((payload: unknown) => {
     const capture = captureRef.current
-    if (!capture || !payload || typeof payload !== 'object') return
+    if (!payload || typeof payload !== 'object') return
     const candidate = payload as { sessionId?: unknown }
+    if (typeof candidate.sessionId !== 'string') return
+    if (!capture) {
+      pendingCancelSessionsRef.current.add(candidate.sessionId)
+      return
+    }
     if (candidate.sessionId !== capture.sessionId) return
     capture.cancelled = true
-    capture.recorder.stop()
+    if (capture.recorder.state === 'recording') capture.recorder.stop()
   }, [])
 
   useEffect(() => {

@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { execFile } from 'node:child_process'
+import { execFile, spawn, type ChildProcessByStdio } from 'node:child_process'
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import type { Readable } from 'node:stream'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 import ffmpegStaticPath from 'ffmpeg-static'
@@ -70,6 +71,15 @@ let pipeline: DictationPipeline
 let registeredShortcut = ''
 let shortcutRegistered = false
 let shortcutRecording = false
+let lastShortcutTriggerAt = 0
+let shortcutStartInFlight = false
+let stopRequestedWhileShortcutStarts = false
+type ShortcutHookProcess = ChildProcessByStdio<null, Readable, Readable>
+
+let shortcutHookProcess: ShortcutHookProcess | null = null
+let shortcutHookShortcut = ''
+let shortcutRecordHookProcess: ShortcutHookProcess | null = null
+let shortcutRegistrationError = 'That shortcut is unavailable or already claimed by another app.'
 let allowQuit = false
 let pillEnabled = true
 let recordingsDirectory = ''
@@ -81,6 +91,7 @@ type ActiveSession = {
   phase: DictationPhase
   result: string
   recordId: string | null
+  fallbackInsertionTarget: InsertionTarget | null
 }
 
 let activeSession: ActiveSession | null = null
@@ -202,7 +213,7 @@ const hideOverlay = (delayMs = 0): void => {
   else setTimeout(reset, delayMs)
 }
 
-const windowBackgroundColor = (): string => nativeTheme.shouldUseDarkColors ? '#1f1d1b' : '#f4f0e9'
+const windowBackgroundColor = (): string => nativeTheme.shouldUseDarkColors ? '#000000' : '#f4f0e9'
 
 nativeTheme.on('updated', () => {
   if (nativeTheme.themeSource === 'system' && mainWindow && !mainWindow.isDestroyed()) {
@@ -244,6 +255,21 @@ const createWindows = (): void => {
   })
   mainWindow.on('closed', () => {
     mainWindow = null
+  })
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (!shortcutRecording || input.type !== 'keyDown' || shortcutRecordHookProcess) return
+    // Keep Windows and Copilot key presses out of the page and capture them
+    // before Chromium turns Win into a shell action or drops the key name.
+    event.preventDefault()
+    if (input.isAutoRepeat) return
+    send('shortcut:record', {
+      key: input.key,
+      code: input.code,
+      ctrlKey: input.control,
+      altKey: input.alt,
+      shiftKey: input.shift,
+      metaKey: input.meta,
+    })
   })
 
   overlayWindow = new BrowserWindow({
@@ -336,19 +362,462 @@ const captureExternalInsertionTarget = (): InsertionTarget | null => {
   return ownedHandles.has(target.handle) ? null : target
 }
 
+// Windows reserves Win+Space for keyboard-layout switching. Electron's
+// globalShortcut correctly reports that accelerator as unavailable even when
+// it is combined with Ctrl. Keep the normal native registration for ordinary
+// accelerators, and use a small low-level hook only for that reserved family
+// so Ctrl+Win+Space remains a real configurable shortcut instead of a value
+// that merely looks valid in the settings UI.
+const windowsShortcutHookScript = String.raw`
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+public static class FlowerWhispKeyboardHook {
+  private const int WH_KEYBOARD_LL = 13;
+  private const int WM_KEYDOWN = 0x0100;
+  private const int WM_KEYUP = 0x0101;
+  private const int WM_SYSKEYDOWN = 0x0104;
+  private const int WM_SYSKEYUP = 0x0105;
+  private const uint VK_LCONTROL = 0xA2;
+  private const uint VK_RCONTROL = 0xA3;
+  private const uint VK_LSHIFT = 0xA0;
+  private const uint VK_RSHIFT = 0xA1;
+  private const uint VK_LMENU = 0xA4;
+  private const uint VK_RMENU = 0xA5;
+  private const uint VK_LWIN = 0x5B;
+  private const uint VK_RWIN = 0x5C;
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct KBDLLHOOKSTRUCT {
+    public uint vkCode;
+    public uint scanCode;
+    public uint flags;
+    public uint time;
+    public UIntPtr dwExtraInfo;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct POINT { public int x; public int y; }
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct MSG {
+    public IntPtr hwnd;
+    public uint message;
+    public UIntPtr wParam;
+    public IntPtr lParam;
+    public uint time;
+    public POINT point;
+  }
+
+  private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+  [DllImport("user32.dll", SetLastError = true)]
+  private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc callback, IntPtr module, uint threadId);
+
+  [DllImport("user32.dll", SetLastError = true)]
+  private static extern bool UnhookWindowsHookEx(IntPtr hook);
+
+  [DllImport("user32.dll")]
+  private static extern IntPtr CallNextHookEx(IntPtr hook, int nCode, IntPtr wParam, IntPtr lParam);
+
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+  private static extern IntPtr GetModuleHandle(string moduleName);
+
+  [DllImport("user32.dll")]
+  private static extern int GetMessage(out MSG message, IntPtr hwnd, uint min, uint max);
+
+  [DllImport("user32.dll")]
+  private static extern bool TranslateMessage(ref MSG message);
+
+  [DllImport("user32.dll")]
+  private static extern IntPtr DispatchMessage(ref MSG message);
+
+  private static readonly HashSet<uint> Down = new HashSet<uint>();
+  private static LowLevelKeyboardProc callback;
+  private static IntPtr hook;
+  private static uint finalKey;
+  private static bool wantControl;
+  private static bool wantShift;
+  private static bool wantAlt;
+  private static bool wantWin;
+
+  private static uint KeyCode(string part) {
+    if (part == "Space") return 0x20;
+    if (part == "Tab") return 0x09;
+    if (part == "Enter") return 0x0D;
+    if (part == "Escape" || part == "Esc") return 0x1B;
+    if (part == "Backspace") return 0x08;
+    if (part == "Delete") return 0x2E;
+    if (part == "Insert") return 0x2D;
+    if (part == "Home") return 0x24;
+    if (part == "End") return 0x23;
+    if (part == "PageUp") return 0x21;
+    if (part == "PageDown") return 0x22;
+    if (part == "Up") return 0x26;
+    if (part == "Down") return 0x28;
+    if (part == "Left") return 0x25;
+    if (part == "Right") return 0x27;
+    if (part == "PrintScreen") return 0x2C;
+    if (part.Length == 1 && ((part[0] >= 'A' && part[0] <= 'Z') || (part[0] >= '0' && part[0] <= '9'))) return part[0];
+    int functionNumber;
+    if (part.StartsWith("F", StringComparison.Ordinal) && Int32.TryParse(part.Substring(1), out functionNumber) && functionNumber >= 1 && functionNumber <= 24) return (uint)(0x6F + functionNumber);
+    return 0;
+  }
+
+  private static bool IsDown(uint left, uint right) { return Down.Contains(left) || Down.Contains(right); }
+
+  private static bool MatchesModifiers() {
+    return (!wantControl || IsDown(VK_LCONTROL, VK_RCONTROL))
+      && (!wantShift || IsDown(VK_LSHIFT, VK_RSHIFT))
+      && (!wantAlt || IsDown(VK_LMENU, VK_RMENU))
+      && (!wantWin || IsDown(VK_LWIN, VK_RWIN));
+  }
+
+  private static IntPtr OnKeyboardEvent(int code, IntPtr wParam, IntPtr lParam) {
+    if (code >= 0 && (wParam.ToInt32() == WM_KEYDOWN || wParam.ToInt32() == WM_SYSKEYDOWN || wParam.ToInt32() == WM_KEYUP || wParam.ToInt32() == WM_SYSKEYUP)) {
+      var data = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
+      var isDown = wParam.ToInt32() == WM_KEYDOWN || wParam.ToInt32() == WM_SYSKEYDOWN;
+      var wasDown = Down.Contains(data.vkCode);
+      if (isDown) Down.Add(data.vkCode); else Down.Remove(data.vkCode);
+      if (isDown && !wasDown && data.vkCode == finalKey && MatchesModifiers()) {
+        Console.WriteLine("TRIGGER");
+        Console.Out.Flush();
+        return (IntPtr)1;
+      }
+    }
+    return CallNextHookEx(hook, code, wParam, lParam);
+  }
+
+  private static string KeyName(uint vkCode) {
+    if (vkCode == 0xA0 || vkCode == 0xA1) return "Shift";
+    if (vkCode == VK_LCONTROL || vkCode == VK_RCONTROL) return "Control";
+    if (vkCode == VK_LMENU || vkCode == VK_RMENU) return "Alt";
+    if (vkCode == VK_LWIN || vkCode == VK_RWIN) return "Meta";
+    if (vkCode == 0x20) return " ";
+    if (vkCode == 0x09) return "Tab";
+    if (vkCode == 0x0D) return "Enter";
+    if (vkCode == 0x1B) return "Escape";
+    if (vkCode == 0x08) return "Backspace";
+    if (vkCode == 0x2E) return "Delete";
+    if (vkCode == 0x2D) return "Insert";
+    if (vkCode == 0x24) return "Home";
+    if (vkCode == 0x23) return "End";
+    if (vkCode == 0x21) return "PageUp";
+    if (vkCode == 0x22) return "PageDown";
+    if (vkCode == 0x26) return "ArrowUp";
+    if (vkCode == 0x28) return "ArrowDown";
+    if (vkCode == 0x25) return "ArrowLeft";
+    if (vkCode == 0x27) return "ArrowRight";
+    if (vkCode == 0x2C) return "PrintScreen";
+    if (vkCode >= 0x41 && vkCode <= 0x5A) return ((char)vkCode).ToString();
+    if (vkCode >= 0x30 && vkCode <= 0x39) return ((char)vkCode).ToString();
+    if (vkCode >= 0x70 && vkCode <= 0x87) return "F" + (vkCode - 0x6F).ToString();
+    if (vkCode == 0xB6) return "LaunchApplication1";
+    return "";
+  }
+
+  private static string KeyCodeName(uint vkCode) {
+    if (vkCode == VK_LCONTROL) return "ControlLeft";
+    if (vkCode == VK_RCONTROL) return "ControlRight";
+    if (vkCode == VK_LSHIFT) return "ShiftLeft";
+    if (vkCode == VK_RSHIFT) return "ShiftRight";
+    if (vkCode == VK_LMENU) return "AltLeft";
+    if (vkCode == VK_RMENU) return "AltRight";
+    if (vkCode == VK_LWIN) return "MetaLeft";
+    if (vkCode == VK_RWIN) return "MetaRight";
+    if (vkCode == 0x20) return "Space";
+    if (vkCode >= 0x41 && vkCode <= 0x5A) return "Key" + ((char)vkCode).ToString();
+    if (vkCode >= 0x30 && vkCode <= 0x39) return "Digit" + ((char)vkCode).ToString();
+    return "";
+  }
+
+  private static IntPtr OnRecordingKeyboardEvent(int code, IntPtr wParam, IntPtr lParam) {
+    if (code >= 0 && (wParam.ToInt32() == WM_KEYDOWN || wParam.ToInt32() == WM_SYSKEYDOWN || wParam.ToInt32() == WM_KEYUP || wParam.ToInt32() == WM_SYSKEYUP)) {
+      var data = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
+      var isDown = wParam.ToInt32() == WM_KEYDOWN || wParam.ToInt32() == WM_SYSKEYDOWN;
+      var wasDown = Down.Contains(data.vkCode);
+      if (isDown) Down.Add(data.vkCode); else Down.Remove(data.vkCode);
+      if (isDown && !wasDown) {
+        var key = KeyName(data.vkCode);
+        if (key.Length > 0) {
+          var control = IsDown(VK_LCONTROL, VK_RCONTROL);
+          var shift = IsDown(VK_LSHIFT, VK_RSHIFT);
+          var alt = IsDown(VK_LMENU, VK_RMENU);
+          var win = IsDown(VK_LWIN, VK_RWIN);
+          Console.WriteLine("KEY|" + key + "|" + KeyCodeName(data.vkCode) + "|" + (control ? "1" : "0") + "|" + (alt ? "1" : "0") + "|" + (shift ? "1" : "0") + "|" + (win ? "1" : "0") + "|0");
+          Console.Out.Flush();
+        }
+      }
+    }
+    return CallNextHookEx(hook, code, wParam, lParam);
+  }
+
+  public static void Record() {
+    Down.Clear();
+    callback = OnRecordingKeyboardEvent;
+    hook = SetWindowsHookEx(WH_KEYBOARD_LL, callback, GetModuleHandle(null), 0);
+    if (hook == IntPtr.Zero) {
+      Console.WriteLine("ERROR");
+      Console.Out.Flush();
+      return;
+    }
+    Console.WriteLine("READY");
+    Console.Out.Flush();
+    MSG message;
+    while (GetMessage(out message, IntPtr.Zero, 0, 0) > 0) {
+      TranslateMessage(ref message);
+      DispatchMessage(ref message);
+    }
+    UnhookWindowsHookEx(hook);
+  }
+
+  public static void Run(string shortcut) {
+    foreach (var part in shortcut.Split(new[] {'+'}, StringSplitOptions.RemoveEmptyEntries)) {
+      if (part == "Control") wantControl = true;
+      else if (part == "Shift") wantShift = true;
+      else if (part == "Alt") wantAlt = true;
+      else if (part == "Super") wantWin = true;
+      else finalKey = KeyCode(part);
+    }
+    if (finalKey == 0 || (!wantControl && !wantShift && !wantAlt && !wantWin)) {
+      Console.WriteLine("ERROR");
+      Console.Out.Flush();
+      return;
+    }
+    callback = OnKeyboardEvent;
+    hook = SetWindowsHookEx(WH_KEYBOARD_LL, callback, GetModuleHandle(null), 0);
+    if (hook == IntPtr.Zero) {
+      Console.WriteLine("ERROR");
+      Console.Out.Flush();
+      return;
+    }
+    Console.WriteLine("READY");
+    Console.Out.Flush();
+    MSG message;
+    while (GetMessage(out message, IntPtr.Zero, 0, 0) > 0) {
+      TranslateMessage(ref message);
+      DispatchMessage(ref message);
+    }
+    UnhookWindowsHookEx(hook);
+  }
+}
+'@
+if ($env:FLOWERWHISP_RECORDING -eq '1') {
+  [FlowerWhispKeyboardHook]::Record()
+} else {
+  [FlowerWhispKeyboardHook]::Run($env:FLOWERWHISP_SHORTCUT)
+}
+`
+
+const isWindowsSpaceShortcut = (shortcut: string): boolean => {
+  const parts = new Set(shortcut.split('+').filter(Boolean))
+  return parts.has('Super') && parts.has('Space')
+}
+
+const terminateShortcutHookProcess = (child: ShortcutHookProcess | null): void => {
+  if (!child) return
+  if (!child.killed) child.kill()
+  // PowerShell hosts the managed low-level hook and can outlive Node's
+  // child handle on Windows. Terminate only this exact helper process tree so
+  // recording mode never leaves a stale hook claiming the user's shortcut.
+  if (process.platform === 'win32' && child.pid) {
+    void execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }, () => undefined)
+  }
+}
+
+const stopWindowsShortcutHook = (): void => {
+  const child = shortcutHookProcess
+  shortcutHookProcess = null
+  shortcutHookShortcut = ''
+  terminateShortcutHookProcess(child)
+}
+
+const stopWindowsShortcutRecorder = (): void => {
+  const child = shortcutRecordHookProcess
+  shortcutRecordHookProcess = null
+  terminateShortcutHookProcess(child)
+}
+
+const startWindowsShortcutRecorder = (): Promise<boolean> => {
+  if (process.platform !== 'win32') return Promise.resolve(false)
+  stopWindowsShortcutRecorder()
+  const child = spawn(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', windowsShortcutHookScript],
+    {
+      windowsHide: true,
+      env: { ...process.env, FLOWERWHISP_RECORDING: '1' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  ) as ShortcutHookProcess
+  shortcutRecordHookProcess = child
+  let buffer = ''
+  let ready = false
+  let settled = false
+  let timeout: NodeJS.Timeout | null = null
+  const clearWait = (): void => {
+    if (timeout) clearTimeout(timeout)
+    timeout = null
+  }
+  const fail = (): void => {
+    if (settled) return
+    settled = true
+    clearWait()
+    if (shortcutRecordHookProcess === child) shortcutRecordHookProcess = null
+    terminateShortcutHookProcess(child)
+  }
+  child.stdout.on('data', (chunk: Buffer | string) => {
+    buffer += chunk.toString()
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (line === 'READY' && !ready) {
+        ready = true
+        settled = true
+        clearWait()
+        continue
+      }
+      if (line === 'ERROR') {
+        fail()
+        continue
+      }
+      if (!line.startsWith('KEY|') || shortcutRecordHookProcess !== child) continue
+      const [, key, code, control, alt, shift, win, repeat] = line.split('|')
+      if (!key) continue
+      send('shortcut:record', {
+        key,
+        code: code || undefined,
+        ctrlKey: control === '1',
+        altKey: alt === '1',
+        shiftKey: shift === '1',
+        metaKey: win === '1',
+        repeat: repeat === '1',
+      })
+    }
+  })
+  child.stderr.on('data', () => undefined)
+  child.once('error', () => fail())
+  child.once('close', () => {
+    if (!ready) fail()
+    if (shortcutRecordHookProcess === child) shortcutRecordHookProcess = null
+  })
+  timeout = setTimeout(() => fail(), 3_000)
+  return new Promise((resolve) => {
+    const check = (): void => {
+      if (ready) resolve(true)
+      else if (!shortcutRecordHookProcess || shortcutRecordHookProcess !== child) resolve(false)
+      else setTimeout(check, 25)
+    }
+    check()
+  })
+}
+
+const startWindowsShortcutHook = (shortcut: string): Promise<boolean> => {
+  if (process.platform !== 'win32' || !isWindowsSpaceShortcut(shortcut)) return Promise.resolve(false)
+  stopWindowsShortcutHook()
+  const child = spawn(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', windowsShortcutHookScript],
+    {
+      windowsHide: true,
+      env: { ...process.env, FLOWERWHISP_SHORTCUT: shortcut },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  ) as ShortcutHookProcess
+  shortcutHookProcess = child
+  shortcutHookShortcut = shortcut
+  let buffer = ''
+  let ready = false
+  let settled = false
+  let timeout: NodeJS.Timeout | null = null
+  const clearWait = (): void => {
+    if (timeout) clearTimeout(timeout)
+    timeout = null
+  }
+  const fail = (): void => {
+    if (settled) return
+    settled = true
+    clearWait()
+    if (shortcutHookProcess === child) {
+      shortcutHookProcess = null
+      shortcutHookShortcut = ''
+    }
+    terminateShortcutHookProcess(child)
+  }
+  child.stdout.on('data', (chunk: Buffer | string) => {
+    buffer += chunk.toString()
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (line === 'READY' && !ready) {
+        ready = true
+        settled = true
+        clearWait()
+      } else if (line === 'TRIGGER') {
+        shortcutHandler()
+      } else if (line === 'ERROR') {
+        fail()
+      }
+    }
+  })
+  child.stderr.on('data', () => undefined)
+  child.once('error', () => fail())
+  child.once('close', () => {
+    if (!ready) fail()
+    if (shortcutHookProcess === child) {
+      shortcutHookProcess = null
+      shortcutHookShortcut = ''
+      if (registeredShortcut === shortcut) {
+        registeredShortcut = ''
+        shortcutRegistered = false
+        send('toast', { kind: 'shortcut-unavailable', shortcut, error: 'The Windows keyboard hook stopped.' })
+      }
+    }
+  })
+  timeout = setTimeout(() => fail(), 3_000)
+  return new Promise((resolve) => {
+    const check = (): void => {
+      if (ready) resolve(true)
+      else if (!shortcutHookProcess || shortcutHookProcess !== child) resolve(false)
+      else setTimeout(check, 25)
+    }
+    check()
+  })
+}
+
 const shortcutHandler = (): void => {
-  if (activeSession) void stopSession()
-  else void startSession('toggle')
+  // Windows can deliver more than one accelerator event while a key chord is
+  // being released. Debounce that edge so one physical press never starts and
+  // immediately stops the same dictation.
+  const now = Date.now()
+  if (now - lastShortcutTriggerAt < 300) return
+  lastShortcutTriggerAt = now
+
+  if (!activeSession || ['ready', 'success', 'error', 'cancelled'].includes(activeSession.phase)) {
+    if (shortcutStartInFlight) {
+      stopRequestedWhileShortcutStarts = true
+      return
+    }
+    void startSession('toggle')
+    return
+  }
+
+  if (activeSession.phase === 'starting' || activeSession.phase === 'recording') void stopSession()
 }
 
 const unregisterShortcut = (): void => {
   if (registeredShortcut) globalShortcut.unregister(registeredShortcut)
+  stopWindowsShortcutHook()
   registeredShortcut = ''
   shortcutRegistered = false
 }
 
-const attemptRegisterShortcut = (shortcut: string): boolean => {
+const attemptRegisterShortcut = async (shortcut: string): Promise<boolean> => {
   if (!isValidShortcut(shortcut)) return false
+  shortcutRegistrationError = 'That shortcut is unavailable or already claimed by another app.'
   try {
     const registered = globalShortcut.register(shortcut, shortcutHandler)
     if (registered) {
@@ -360,6 +829,12 @@ const attemptRegisterShortcut = (shortcut: string): boolean => {
     // Electron reports conflicts and unsupported OS accelerators as a simple
     // false result, but some platform builds throw instead.
   }
+  if (isWindowsSpaceShortcut(shortcut) && await startWindowsShortcutHook(shortcut)) {
+    registeredShortcut = shortcut
+    shortcutRegistered = true
+    return true
+  }
+  if (isWindowsSpaceShortcut(shortcut)) shortcutRegistrationError = 'Windows reserves Win+Space, so FlowerWhisp could not install the low-level hook for this combination.'
   return false
 }
 
@@ -367,15 +842,16 @@ const registerShortcut = async (): Promise<boolean> => {
   if (shortcutRecording) return false
   const snapshot = await getSnapshot()
   const requestedShortcut = snapshot.settings.toggleShortcut
-  const fallbackShortcut = 'Control+Alt+Space'
   unregisterShortcut()
-  let registered = attemptRegisterShortcut(requestedShortcut)
-  if (!registered && requestedShortcut !== fallbackShortcut) registered = attemptRegisterShortcut(fallbackShortcut)
-  if (!registered) registeredShortcut = ''
+  const registered = await attemptRegisterShortcut(requestedShortcut)
   send('toast', {
     kind: registered ? 'shortcut-ready' : 'shortcut-unavailable',
     shortcut: registered ? registeredShortcut : requestedShortcut,
+    error: registered ? undefined : shortcutRegistrationError,
   })
+  // Settings must refresh after the native registration attempt so the
+  // displayed chord and the registered chord cannot drift apart.
+  send('toast', { kind: 'refresh' })
   console.info(`[shortcut] requested=${requestedShortcut} active=${registeredShortcut || 'none'} registered=${registered}`)
   return registered
 }
@@ -384,22 +860,28 @@ const setShortcutRecording = async (recording: boolean): Promise<CommandResult> 
   shortcutRecording = recording
   if (recording) {
     unregisterShortcut()
+    await startWindowsShortcutRecorder()
     return result(true, 'Shortcut recording is ready.')
   }
+  stopWindowsShortcutRecorder()
   await registerShortcut()
   return shortcutRegistered
     ? result(true, 'Shortcut restored.')
-    : result(false, undefined, `Could not restore ${registeredShortcut || 'the shortcut'}.`)
+    : result(false, undefined, shortcutRegistrationError)
 }
 
-const startSession = async (mode: DictationMode): Promise<CommandResult> => {
+const startSession = async (mode: DictationMode, fallbackInsertionTarget?: InsertionTarget | null): Promise<CommandResult> => {
   if (activeSession && ['ready', 'success', 'error', 'cancelled'].includes(activeSession.phase)) {
     stopElapsedTicker()
     activeSession = null
   }
   if (activeSession) return result(false, undefined, 'A dictation is already in progress.')
-  const settings = (await getSnapshot()).settings
-  activeSession = { id: randomUUID(), mode, startedAt: Date.now(), phase: 'starting', result: '', recordId: null }
+  if (shortcutStartInFlight) return result(false, undefined, 'The microphone is still starting.')
+  shortcutStartInFlight = true
+  const insertionTarget = fallbackInsertionTarget === undefined ? captureExternalInsertionTarget() : fallbackInsertionTarget
+  try {
+    const settings = (await getSnapshot()).settings
+    activeSession = { id: randomUUID(), mode, startedAt: Date.now(), phase: 'starting', result: '', recordId: null, fallbackInsertionTarget: insertionTarget }
   publishOverlay({
     phase: 'starting',
     sessionId: activeSession.id,
@@ -417,12 +899,21 @@ const startSession = async (mode: DictationMode): Promise<CommandResult> => {
   startElapsedTicker()
   if (settings.showPill) showOverlay()
   mainWindow?.webContents.send('recording:start', { sessionId: activeSession.id, mode })
-  advance('recording', { message: mode === 'hold' ? 'Hold mode is local to the app without a native key-up hook.' : 'Speak naturally, then press the shortcut again.' })
-  return result(true)
+    advance('recording', { message: mode === 'hold' ? 'Hold mode is local to the app without a native key-up hook.' : 'Speak naturally, then press the shortcut again.' })
+    if (stopRequestedWhileShortcutStarts) {
+      stopRequestedWhileShortcutStarts = false
+      void stopSession()
+    }
+    return result(true)
+  } finally {
+    shortcutStartInFlight = false
+    if (!activeSession) stopRequestedWhileShortcutStarts = false
+  }
 }
 
 const stopSession = async (): Promise<CommandResult> => {
   if (!activeSession) return result(false, undefined, 'There is no active dictation.')
+  if (['stopping', 'transcribing', 'processing', 'inserting'].includes(activeSession.phase)) return result(true, 'Dictation is already finishing.')
   const sessionId = activeSession.id
   advance('stopping', { message: 'Finishing audio capture…' })
   mainWindow?.webContents.send('recording:stop', { sessionId })
@@ -459,39 +950,40 @@ const handleAudio = async (payload: { sessionId: string; dataUrl: string; mimeTy
       console.warn('FlowerWhisp could not retain the source recording for playback', error)
     }
     const startedAt = activeSession.startedAt
+    // Capture the active application immediately before insertion. This is
+    // the user's requested behavior when they move to another field/app
+    // while transcription is running. If a focus transition briefly leaves
+    // Flow or the desktop in the foreground, retain the external target from
+    // the moment dictation started instead of silently falling back to copy.
+    const readyInsertionTarget = captureExternalInsertionTarget()
+    const insertionTarget = readyInsertionTarget ?? activeSession.fallbackInsertionTarget
+    console.info(`[insertion] readyTarget=${readyInsertionTarget?.handle ?? 'none'} fallbackTarget=${activeSession.fallbackInsertionTarget?.handle ?? 'none'} selectedTarget=${insertionTarget?.handle ?? 'none'}`)
     advance('inserting', { message: 'Inserting transcript into the active application…' })
-    // Resolve the destination only when the transcript is ready. The user may
-    // have moved the cursor or switched apps while transcription was running.
-    const insertion = insertAtTarget(processed.finalText, captureExternalInsertionTarget())
+    // Resolve the destination only when the transcript is ready, preferring
+    // the current foreground app over the start-time fallback.
+    const insertion = insertAtTarget(processed.finalText, insertionTarget)
     await store.update((snapshot) => {
       const record = snapshot.records.find((candidate) => candidate.id === processed.record.id)
       if (record) record.insertionOutcome = insertion.outcome
     })
     notifyBootstrapChanged()
-    activeSession.result = processed.finalText
-    activeSession.recordId = processed.record.id
-    if (insertion.outcome === 'inserted') {
-      stopElapsedTicker()
-      activeSession = null
-      publishOverlay({
-        phase: 'success',
-        message: insertion.message,
-        transcript: processed.rawText,
-        result: processed.finalText,
-        copyAvailable: false,
-        elapsedMs: Date.now() - startedAt,
-      })
-      hideOverlay(1_200)
-      return result(true, insertion.message)
-    }
+    // Both successful native insertion and clipboard-only fallback are a
+    // completed dictation. Keep the transcript copied in the background, do
+    // not expose a manual Copy button in the pill, and return it to idle.
     stopElapsedTicker()
-    advance('ready', {
+    if (insertion.outcome !== 'inserted') {
+      console.info(`[insertion] automatic paste unavailable; transcript remains on the clipboard outcome=${insertion.outcome}`)
+    }
+    activeSession = null
+    publishOverlay({
+      phase: 'success',
       message: insertion.message,
       transcript: processed.rawText,
       result: processed.finalText,
-      copyAvailable: true,
-      elapsedMs: Date.now() - activeSession.startedAt,
+      copyAvailable: false,
+      elapsedMs: Date.now() - startedAt,
     })
+    hideOverlay(1_200)
     return result(true, insertion.message)
   } catch (error) {
     stopElapsedTicker()
@@ -556,8 +1048,7 @@ const applySystemSettings = (settings: PublicSettings): void => {
 }
 
 const saveSettings = async (patch: Partial<PublicSettings>): Promise<CommandResult> => {
-  if (patch.toggleShortcut !== undefined && !isValidShortcut(patch.toggleShortcut)) return result(false, undefined, 'Toggle shortcut needs a modifier and one key, for example Control+Shift+Tab.')
-  if (patch.holdShortcut !== undefined && !isValidShortcut(patch.holdShortcut)) return result(false, undefined, 'Hold shortcut needs a modifier and one key, for example Control+Shift+Space.')
+  if (patch.toggleShortcut !== undefined && !isValidShortcut(patch.toggleShortcut)) return result(false, undefined, 'Use at least one modifier and one final key, for example Control+Super+Space or Control+Shift+Tab.')
   if (patch.cleanupPrompts !== undefined) {
     for (const level of ['none', 'light', 'medium'] as const) {
       const prompt = patch.cleanupPrompts[level]
@@ -567,12 +1058,12 @@ const saveSettings = async (patch: Partial<PublicSettings>): Promise<CommandResu
   if (patch.theme !== undefined && !['light', 'dark', 'system'].includes(patch.theme)) return result(false, undefined, 'Choose light, dark, or system appearance.')
   const previous = await getSnapshot()
   const previousShortcut = previous.settings.toggleShortcut
-  if (patch.toggleShortcut !== undefined && patch.toggleShortcut !== previousShortcut) {
+  if (patch.toggleShortcut !== undefined && patch.toggleShortcut !== previousShortcut && !shortcutRecording) {
     const previousActiveShortcut = registeredShortcut
     if (!shortcutRecording) unregisterShortcut()
-    if (!attemptRegisterShortcut(patch.toggleShortcut)) {
-      if (!shortcutRecording && previousActiveShortcut) attemptRegisterShortcut(previousActiveShortcut)
-      return result(false, undefined, 'That shortcut is unavailable or already claimed by another app. Choose a different combination.')
+    if (!(await attemptRegisterShortcut(patch.toggleShortcut))) {
+      if (!shortcutRecording && previousActiveShortcut) await attemptRegisterShortcut(previousActiveShortcut)
+      return result(false, undefined, shortcutRegistrationError)
     }
   }
   const updated = await store.update((snapshot) => {
@@ -909,6 +1400,8 @@ if (!gotLock) {
   })
   app.on('will-quit', () => {
     stopElapsedTicker()
+    stopWindowsShortcutHook()
+    stopWindowsShortcutRecorder()
     globalShortcut.unregisterAll()
     tray?.destroy()
   })

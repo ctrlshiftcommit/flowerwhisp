@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isValidShortcut } from './shortcuts'
+import { isValidShortcut, shortcutFromEvent } from './shortcuts'
 
 describe('isValidShortcut', () => {
   it('accepts common toggle accelerators with a modifier and key', () => {
@@ -24,6 +24,14 @@ describe('isValidShortcut', () => {
   it('accepts multi-modifier keys and Copilot-compatible function keys', () => {
     expect(isValidShortcut('Control+Shift+Tab')).toBe(true)
     expect(isValidShortcut('Super+Shift+F23')).toBe(true)
+    expect(isValidShortcut('F23')).toBe(true)
+  })
+
+  it('normalizes Windows and Copilot key events into Electron accelerators', () => {
+    expect(shortcutFromEvent({ key: ' ', code: 'Space', ctrlKey: true, shiftKey: true })).toBe('Control+Shift+Space')
+    expect(shortcutFromEvent({ key: 'Meta', code: 'MetaLeft', metaKey: true })).toBe('Super')
+    expect(shortcutFromEvent({ key: 'LaunchApplication1', code: 'LaunchApp1' })).toBe('F23')
+    expect(shortcutFromEvent({ key: 'Tab', code: 'Tab', metaKey: true, shiftKey: true })).toBe('Shift+Super+Tab')
   })
 
   it('rejects duplicate or unknown accelerator parts', () => {
