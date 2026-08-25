@@ -12,6 +12,8 @@ export type ProviderId = 'groq' | 'local'
 export type LlmProviderId = 'groq' | 'none'
 export type CleanupLevel = 'none' | 'light' | 'medium'
 export type DictationMode = 'toggle' | 'hold'
+export type { ShortcutActionId, ShortcutBindings } from './shortcuts'
+import type { ShortcutActionId, ShortcutBindings } from './shortcuts'
 export type RetentionMode = 'forever' | '24h' | 'never'
 export type DictationPhase =
   | 'idle'
@@ -37,6 +39,7 @@ export interface PublicSettings {
   defaultStyle: string
   holdShortcut: string
   toggleShortcut: string
+  shortcutBindings: ShortcutBindings
   microphoneLabel: string
   localCommand: string
   localWorkingDirectory: string
@@ -148,6 +151,10 @@ export interface BootstrapPayload {
   registeredHoldShortcut: string
   shortcutRegistered: boolean
   registeredShortcut: string
+  shortcutRegistrations: Record<ShortcutActionId, {
+    registered: string[]
+    unavailable: string[]
+  }>
   capabilities: {
     microphone: boolean
     cloudTranscription: boolean
@@ -174,6 +181,15 @@ export interface CommandResult {
   error?: string
 }
 
+export interface CommandModePayload {
+  sourceText: string
+  message?: string
+}
+
+export interface CommandModeResult extends CommandResult {
+  text?: string
+}
+
 export interface HistoryAudioResult extends CommandResult {
   dataUrl?: string
   mimeType?: string
@@ -185,6 +201,9 @@ export type AppEventChannel =
   | 'recording:stop'
   | 'recording:cancel'
   | 'shortcut:record'
+  | 'command:open'
+  | 'command:view-changes'
+  | 'action:cancel'
   | 'overlay:state'
   | 'overlay:level'
   | 'toast'
@@ -245,6 +264,11 @@ export interface FlowerWhispApi {
   scratchpad: {
     read(): Promise<string>
     save(value: string): Promise<CommandResult>
+  }
+  command: {
+    run(sourceText: string, instructions: string): Promise<CommandModeResult>
+    apply(text: string): Promise<CommandResult>
+    askPerplexity(sourceText: string, question: string): Promise<CommandResult>
   }
   on(channel: AppEventChannel, listener: (payload: unknown) => void): () => void
 }

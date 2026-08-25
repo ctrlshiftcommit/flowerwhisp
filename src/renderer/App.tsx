@@ -46,6 +46,7 @@ import type {
   OverlayState,
   PageId,
   PublicSettings,
+  ShortcutActionId,
   Snippet,
   StyleProfile,
   TransformProfile,
@@ -54,11 +55,13 @@ import { DEFAULT_CLEANUP_PROMPTS } from '../shared/promptDefaults'
 import type { ShortcutKeyEvent } from '../shared/shortcuts'
 import {
   DEFAULT_HOLD_SHORTCUT,
+  DEFAULT_SHORTCUT_BINDINGS,
   DEFAULT_TOGGLE_SHORTCUT,
   HOLD_SHORTCUT_REQUIREMENT,
   isShortcutModifier,
   isValidHoldShortcut,
   isValidShortcut,
+  isValidShortcutForAction,
   SHORTCUT_REQUIREMENT,
   shortcutFromEvent,
 } from '../shared/shortcuts'
@@ -76,6 +79,7 @@ const emptySettings: PublicSettings = {
   defaultStyle: 'personal-casual',
   holdShortcut: DEFAULT_HOLD_SHORTCUT,
   toggleShortcut: DEFAULT_TOGGLE_SHORTCUT,
+  shortcutBindings: Object.fromEntries(Object.entries(DEFAULT_SHORTCUT_BINDINGS).map(([action, bindings]) => [action, [...bindings]])) as PublicSettings['shortcutBindings'],
   microphoneLabel: 'System default microphone',
   localCommand: '',
   localWorkingDirectory: '',
@@ -117,6 +121,7 @@ const emptyBootstrap = (): BootstrapPayload => ({
   registeredHoldShortcut: '',
   shortcutRegistered: false,
   registeredShortcut: '',
+  shortcutRegistrations: Object.fromEntries(Object.keys(DEFAULT_SHORTCUT_BINDINGS).map((action) => [action, { registered: [], unavailable: [] }])) as unknown as BootstrapPayload['shortcutRegistrations'],
   capabilities: {
     microphone: true,
     cloudTranscription: true,
@@ -188,6 +193,11 @@ const offlineApi: FlowerWhispApi = {
   scratchpad: {
     read: async () => '',
     save: async () => offlineResponse(),
+  },
+  command: {
+    run: async () => offlineResponse(),
+    apply: async () => offlineResponse(),
+    askPerplexity: async () => offlineResponse(),
   },
   on: () => () => undefined,
 }
@@ -264,10 +274,28 @@ const shortcutPartLabel = (part: string): string => {
   if (part === 'Space') return 'Space'
   if (part === 'Escape') return 'Esc'
   if (part === 'F23') return 'Copilot'
+  if (part === 'MouseMiddle') return 'Middle Click'
+  if (part === 'Mouse4') return 'Mouse 4'
+  if (part === 'Mouse5') return 'Mouse 5'
+  if (part === 'DoubleTapMouseMiddle') return 'Double tap Middle Click'
+  if (part === 'DoubleTapMouse4') return 'Double tap Mouse 4'
+  if (part === 'DoubleTapMouse5') return 'Double tap Mouse 5'
   return part
 }
 
 const formatShortcut = (value: string): string => value.split('+').filter(Boolean).map(shortcutPartLabel).join(' + ')
+
+const shortcutActionCopy: Record<ShortcutActionId, { label: string; description: string }> = {
+  pushToTalk: { label: 'Push to talk', description: 'Hold a keyboard combination or mouse button while speaking. Release it to transcribe and paste.' },
+  handsFree: { label: 'Hands-free mode', description: 'Press once to start dictation and press the same shortcut again to finish and paste.' },
+  pressEnter: { label: 'Press Enter', description: 'Send Enter to the app that currently owns the text cursor.' },
+  commandMode: { label: 'Command Mode', description: 'Capture selected text and open a Flow or Perplexity command.' },
+  pasteLastTranscript: { label: 'Paste last transcript', description: 'Paste the most recent transcript at the current text cursor.' },
+  copyLastTranscript: { label: 'Copy last transcript', description: 'Copy the most recent transcript to the clipboard.' },
+  openScratchpad: { label: 'Open Scratchpad', description: 'Show FlowerWhisp and open the private Scratchpad.' },
+  transformViewChanges: { label: 'Transform view changes', description: 'Open the most recent before-and-after Transform view.' },
+  cancel: { label: 'Cancel', description: 'Cancel active dictation and dismiss FlowerWhisp overlays or notices.' },
+}
 
 const formatDate = (value: string): string =>
   new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(value))
@@ -321,14 +349,14 @@ const IconButton = ({
 const ShortcutRecorder = ({
   label,
   value,
-  mode,
+  action,
   disabled = false,
   onChange,
   onListeningChange,
 }: {
   label: string
   value: string
-  mode: DictationMode
+  action: ShortcutActionId
   disabled?: boolean
   onChange: (value: string) => Promise<CommandResult>
   onListeningChange?: (listening: boolean) => void
@@ -338,6 +366,8 @@ const ShortcutRecorder = ({
   const [error, setError] = useState('')
   const shortcutRecordingActive = useRef(false)
   const pendingShortcut = useRef('')
+  const mouseCommitTimer = useRef<number | null>(null)
+  const lastMouseDown = useRef<{ key: string; at: number } | null>(null)
   const begin = async () => {
     if (disabled || shortcutRecordingActive.current) return
     const response = await api.settings.setShortcutRecording(true)
@@ -347,6 +377,9 @@ const ShortcutRecorder = ({
     }
     shortcutRecordingActive.current = true
     pendingShortcut.current = ''
+    if (mouseCommitTimer.current !== null) window.clearTimeout(mouseCommitTimer.current)
+    mouseCommitTimer.current = null
+    lastMouseDown.current = null
     setPending('')
     setError('')
     setListening(true)
@@ -376,6 +409,37 @@ const ShortcutRecorder = ({
   const handleRecordedEvent = useCallback((event: ShortcutKeyEvent & { repeat?: boolean }) => {
     if (event.repeat) return
     const eventType = event.type ?? 'keydown'
+    if ((eventType === 'mousedown' || eventType === 'mouseup') && ['MouseMiddle', 'Mouse4', 'Mouse5'].includes(event.key)) {
+      if (action === 'pushToTalk') {
+        pendingShortcut.current = event.key
+        setPending(event.key)
+        setError('')
+        if (eventType === 'mouseup') void commit(event.key)
+        return
+      }
+      if (eventType === 'mouseup') return
+      const now = Date.now()
+      const previous = lastMouseDown.current
+      if (previous?.key === event.key && now - previous.at <= 430) {
+        if (mouseCommitTimer.current !== null) window.clearTimeout(mouseCommitTimer.current)
+        mouseCommitTimer.current = null
+        lastMouseDown.current = null
+        const doubleTap = `DoubleTap${event.key}`
+        pendingShortcut.current = doubleTap
+        setPending(doubleTap)
+        void commit(doubleTap)
+        return
+      }
+      lastMouseDown.current = { key: event.key, at: now }
+      pendingShortcut.current = event.key
+      setPending(event.key)
+      mouseCommitTimer.current = window.setTimeout(() => {
+        mouseCommitTimer.current = null
+        lastMouseDown.current = null
+        void commit(event.key)
+      }, 440)
+      return
+    }
     const eventIsControl = event.key === 'Control' || event.code?.startsWith('Control')
     const eventIsAlt = event.key === 'Alt' || event.code?.startsWith('Alt')
     const eventIsShift = event.key === 'Shift' || event.code?.startsWith('Shift')
@@ -392,17 +456,17 @@ const ShortcutRecorder = ({
     )
     const eventIsModifier = eventIsControl || eventIsAlt || eventIsShift || eventIsWindows
     const hasModifier = Boolean(event.ctrlKey || event.altKey || event.shiftKey || eventIsWindows || eventIsControl || eventIsAlt || eventIsShift)
-    if (eventType === 'keydown' && event.key === 'Escape' && !hasModifier) {
+    if (eventType === 'keydown' && event.key === 'Escape' && !hasModifier && action !== 'cancel') {
       void finish()
       return
     }
 
     if (eventType === 'keyup') {
-      if (mode !== 'hold') return
+      if (action !== 'pushToTalk' && action !== 'commandMode') return
       const next = pendingShortcut.current
       if (!next) return
-      if (!isValidHoldShortcut(next)) {
-        setError(HOLD_SHORTCUT_REQUIREMENT)
+      if (!isValidShortcutForAction(action, next)) {
+        setError(action === 'pushToTalk' ? HOLD_SHORTCUT_REQUIREMENT : 'Use a modifier chord, a function key, or another supported global shortcut.')
         return
       }
       setError('')
@@ -431,10 +495,10 @@ const ShortcutRecorder = ({
     const orderedModifiers = ['Control', 'Alt', 'Shift', 'Super'].filter((part) => modifiers.has(part))
     const next = [...orderedModifiers, ...(finalKey ? [finalKey] : [])].join('+')
     if (!next) return
-    const complete = mode === 'hold' ? isValidHoldShortcut(next) : isValidShortcut(next)
+    const complete = isValidShortcutForAction(action, next)
     pendingShortcut.current = next
     setPending(next)
-    if (mode === 'hold') {
+    if (action === 'pushToTalk' || (action === 'commandMode' && !finalKey)) {
       if (!complete) {
         setError(finalKey ? 'That hold key is not supported. Try a modifier chord, function key, Tab, Space, or another special key.' : HOLD_SHORTCUT_REQUIREMENT)
         return
@@ -454,7 +518,7 @@ const ShortcutRecorder = ({
     }
     setError('')
     void commit(next)
-  }, [commit, finish, mode])
+  }, [action, commit, finish])
   useEffect(() => {
     if (!listening) return undefined
     const offShortcut = api.on('shortcut:record', (payload) => {
@@ -467,6 +531,7 @@ const ShortcutRecorder = ({
         shortcutRecordingActive.current = false
         void api.settings.setShortcutRecording(false)
       }
+      if (mouseCommitTimer.current !== null) window.clearTimeout(mouseCommitTimer.current)
       onListeningChange?.(false)
     }
   }, [finish, handleRecordedEvent, listening, onListeningChange])
@@ -489,10 +554,53 @@ const ShortcutRecorder = ({
         {display.split('+').filter(Boolean).map((part) => <kbd key={part}>{shortcutPartLabel(part)}</kbd>)}
         {!display ? <span className="shortcut-recorder-empty">No shortcut</span> : null}
       </span>
-      <span className="shortcut-recorder-hint">{listening ? mode === 'hold' && pending && isValidHoldShortcut(pending) ? 'Release to save' : 'Press keys…' : 'Click to change'}</span>
+      <span className="shortcut-recorder-hint">{listening ? (action === 'pushToTalk' || action === 'commandMode') && pending && isValidShortcutForAction(action, pending) ? 'Release to save' : 'Press keys or mouse…' : 'Click to add'}</span>
       {error ? <span className="shortcut-recorder-error" role="alert">{error}</span> : null}
     </button>
   )
+}
+
+const ShortcutActionEditor = ({
+  action,
+  bindings,
+  registered,
+  unavailable,
+  listeningAction,
+  onListeningAction,
+  onChange,
+}: {
+  action: ShortcutActionId
+  bindings: string[]
+  registered: string[]
+  unavailable: string[]
+  listeningAction: ShortcutActionId | null
+  onListeningAction: (action: ShortcutActionId | null) => void
+  onChange: (bindings: string[]) => Promise<CommandResult>
+}) => {
+  const listening = listeningAction === action
+  const add = async (binding: string) => onChange([...new Set([...bindings, binding])])
+  const remove = (binding: string) => { void onChange(bindings.filter((candidate) => candidate !== binding)) }
+  const status = listening
+    ? 'Listening for keys or mouse…'
+    : unavailable.length > 0
+      ? `${unavailable.length} unavailable`
+      : registered.length > 0
+        ? `${registered.length} active globally`
+        : 'Not assigned'
+  return <SettingRow label={shortcutActionCopy[action].label} description={shortcutActionCopy[action].description}>
+    <div className="shortcut-action-editor">
+      {bindings.length > 0 ? <div className="shortcut-binding-list">{bindings.map((binding) => <div className={`shortcut-binding ${unavailable.includes(binding) ? 'is-unavailable' : ''}`} key={binding}><span>{formatShortcut(binding)}</span><IconButton label={`Remove ${formatShortcut(binding)}`} icon={X} onClick={() => remove(binding)} disabled={listeningAction !== null} /></div>)}</div> : null}
+      <ShortcutRecorder
+        label={`Add ${shortcutActionCopy[action].label} shortcut`}
+        action={action}
+        value=""
+        disabled={listeningAction !== null && !listening}
+        onChange={add}
+        onListeningChange={(next) => onListeningAction(next ? action : listeningAction === action ? null : listeningAction)}
+      />
+      <span className={`shortcut-status ${listening ? 'is-listening' : unavailable.length > 0 ? 'is-unavailable' : registered.length > 0 ? 'is-ready' : ''}`} role="status"><span className="shortcut-status-dot" />{status}</span>
+    </div>
+  </SettingRow>
 }
 
 const clampLevel = (value: number): number => Math.max(0, Math.min(1, value))
@@ -1009,7 +1117,7 @@ const SettingsPage = ({ data, onRefresh, onThemePreview }: { data: BootstrapPayl
   const [draft, setDraft] = useState(data.settings)
   const [key, setKey] = useState('')
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('system')
-  const [shortcutListening, setShortcutListening] = useState<DictationMode | null>(null)
+  const [shortcutListening, setShortcutListening] = useState<ShortcutActionId | null>(null)
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [draftDirty, setDraftDirty] = useState(false)
   useEffect(() => { if (!draftDirty) setDraft(data.settings) }, [data.settings, draftDirty])
@@ -1039,33 +1147,35 @@ const SettingsPage = ({ data, onRefresh, onThemePreview }: { data: BootstrapPayl
           </SettingGroup>
         </SettingsSection>
       case 'general':
-        const holdListening = shortcutListening === 'hold'
-        const toggleListening = shortcutListening === 'toggle'
-        const requestedHoldShortcut = draft.holdShortcut
-        const requestedToggleShortcut = draft.toggleShortcut
-        const holdShortcutMatches = data.holdShortcutRegistered && data.registeredHoldShortcut === requestedHoldShortcut
-        const toggleShortcutMatches = data.shortcutRegistered && data.registeredShortcut === requestedToggleShortcut
-        const holdShortcutDescription = holdListening
-          ? 'Press the complete combination now. Press Escape by itself to cancel.'
-          : holdShortcutMatches
-            ? 'Hold this combination while speaking. Release it to transcribe and paste.'
-            : data.holdShortcutRegistered
-              ? `The saved hold shortcut is not active. Active: ${formatShortcut(data.registeredHoldShortcut)}.`
-              : 'No hold shortcut is active. Modifier-only combinations such as Ctrl + Win are supported.'
-        const toggleShortcutDescription = toggleListening
-          ? 'Press the complete combination now. Press Escape by itself to cancel.'
-          : toggleShortcutMatches
-            ? 'Press once to start hands-free dictation, then press the same combination again to finish.'
-            : data.shortcutRegistered
-              ? `The saved toggle shortcut is not active. Active: ${formatShortcut(data.registeredShortcut)}.`
-              : 'No toggle shortcut is active. Hold every listed modifier, then press one final key.'
-        const holdShortcutStatus = holdListening ? 'Listening for keys…' : holdShortcutMatches ? 'Active globally' : data.holdShortcutRegistered ? 'Different shortcut active' : 'Unavailable'
-        const toggleShortcutStatus = toggleListening ? 'Listening for keys…' : toggleShortcutMatches ? 'Active globally' : data.shortcutRegistered ? 'Different shortcut active' : 'Unavailable'
+        const updateBindings = (action: ShortcutActionId, bindings: string[]) => persist({
+          shortcutBindings: { ...draft.shortcutBindings, [action]: bindings },
+        })
+        const editor = (action: ShortcutActionId) => <ShortcutActionEditor
+          key={action}
+          action={action}
+          bindings={draft.shortcutBindings[action]}
+          registered={data.shortcutRegistrations[action].registered}
+          unavailable={data.shortcutRegistrations[action].unavailable}
+          listeningAction={shortcutListening}
+          onListeningAction={setShortcutListening}
+          onChange={(bindings) => updateBindings(action, bindings)}
+        />
         return <SettingsSection id="general" title="General" description="">
-          <SettingGroup title="Global dictation shortcuts">
-            <SettingRow label="Push to talk · hold to dictate" description={holdShortcutDescription}><div className="shortcut-setting-control"><ShortcutRecorder label="Push to talk shortcut" mode="hold" value={requestedHoldShortcut} disabled={shortcutListening !== null && !holdListening} onChange={(value) => persist({ holdShortcut: value })} onListeningChange={(listening) => setShortcutListening((current) => listening ? 'hold' : current === 'hold' ? null : current)} /><span className={`shortcut-status ${holdListening ? 'is-listening' : holdShortcutMatches ? 'is-ready' : 'is-unavailable'}`} role="status"><span className="shortcut-status-dot" />{holdShortcutStatus}</span></div></SettingRow>
-            <SettingRow label="Hands-free mode · toggle dictation" description={toggleShortcutDescription}><div className="shortcut-setting-control"><ShortcutRecorder label="Hands-free mode shortcut" mode="toggle" value={requestedToggleShortcut} disabled={shortcutListening !== null && !toggleListening} onChange={(value) => persist({ toggleShortcut: value })} onListeningChange={(listening) => setShortcutListening((current) => listening ? 'toggle' : current === 'toggle' ? null : current)} /><span className={`shortcut-status ${toggleListening ? 'is-listening' : toggleShortcutMatches ? 'is-ready' : 'is-unavailable'}`} role="status"><span className="shortcut-status-dot" />{toggleShortcutStatus}</span></div></SettingRow>
-            <div className="shortcut-editor-guidance"><Info size={16} /><span><strong>Push to talk:</strong> {HOLD_SHORTCUT_REQUIREMENT}<br /><strong>Hands-free:</strong> {SHORTCUT_REQUIREMENT}<br />The two combinations must be different. An overlapping pair such as Ctrl + Win and Ctrl + Win + Space is supported: Space locks the active hold capture into hands-free mode.</span></div>
+          <SettingGroup title="Dictation">
+            {editor('pushToTalk')}
+            {editor('handsFree')}
+          </SettingGroup>
+          <SettingGroup title="Actions">
+            {editor('pressEnter')}
+            {editor('commandMode')}
+            {editor('pasteLastTranscript')}
+            {editor('copyLastTranscript')}
+            {editor('openScratchpad')}
+            {editor('cancel')}
+          </SettingGroup>
+          <SettingGroup title="Transform">
+            {editor('transformViewChanges')}
+            <div className="shortcut-editor-guidance"><Info size={16} /><span>Each action can have more than one binding. Click an existing binding’s × to remove it. Push to talk accepts modifier-only holds and mouse buttons; Command Mode accepts modifier-only chords; other keyboard actions use a modified key or a function key. Single and double-tap mouse gestures are supported. The combinations shown in another app are not installed unless you record them here.</span></div>
           </SettingGroup>
           <SettingGroup title="Capture">
             <SettingRow label="Microphone" description="Used by the browser capture surface."><span className="setting-value">{data.settings.microphoneLabel || 'System default microphone'}</span></SettingRow>
@@ -1102,6 +1212,38 @@ const SettingGroup = ({ title, children }: { title: string; children: ReactNode 
 const SettingRow = ({ label, description, children }: { label: string; description: string; children: ReactNode }) => <div className="setting-row"><div><strong>{label}</strong>{description ? <span>{description}</span> : null}</div><div className="setting-control">{children}</div></div>
 const Toggle = ({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) => <button className={`toggle ${checked ? 'is-on' : ''}`} type="button" aria-label={label} aria-pressed={checked} onClick={() => onChange(!checked)}><span /></button>
 const EmptyState = ({ icon: Icon, title, body, action, onAction }: { icon: NavIcon; title: string; body: string; action: string; onAction: () => void }) => <div className="empty-state"><div className="empty-glyph"><Icon size={27} /></div><div><h3>{title}</h3><p>{body}</p><Button variant="secondary" onClick={onAction}>{action}</Button></div></div>
+
+type CommandModeState = { sourceText: string; text?: string; instructions?: string; message?: string }
+
+const CommandModeModal = ({ state, onClose }: { state: CommandModeState; onClose: () => void }) => {
+  const [instructions, setInstructions] = useState(state.instructions ?? '')
+  const [resultText, setResultText] = useState(state.text ?? '')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(state.message ?? '')
+  useEffect(() => {
+    setInstructions(state.instructions ?? '')
+    setResultText(state.text ?? '')
+    setError(state.message ?? '')
+  }, [state])
+  const run = async () => {
+    setBusy(true)
+    setError('')
+    const response = await api.command.run(state.sourceText, instructions)
+    setBusy(false)
+    if (response.ok && response.text) setResultText(response.text)
+    else setError(response.error ?? 'Command Mode failed.')
+  }
+  const apply = async () => {
+    const response = await api.command.apply(resultText)
+    if (response.ok) onClose()
+    else setError(response.error ?? 'The Transform result could not be inserted.')
+  }
+  const askPerplexity = async () => {
+    const response = await api.command.askPerplexity(state.sourceText, instructions)
+    if (!response.ok) setError(response.error ?? 'Perplexity could not be opened.')
+  }
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="command-mode-modal" role="dialog" aria-modal="true" aria-labelledby="command-mode-title"><div className="reference-modal-heading"><div><span className="detail-kicker">Command Mode</span><h2 id="command-mode-title">Ask about selected text</h2><p>Run a private FlowerWhisp Transform, or explicitly send the selection to Perplexity.</p></div><IconButton label="Close Command Mode" icon={X} onClick={onClose} /></div><div className="command-mode-grid"><label><span>Selected text</span><textarea value={state.sourceText} readOnly rows={7} placeholder="Select text in another app, then trigger Command Mode." /></label><label><span>{resultText ? 'Transform result' : 'What should happen?'}</span>{resultText ? <textarea value={resultText} onChange={(event) => setResultText(event.target.value)} rows={7} /> : <textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} rows={7} placeholder="Polish this, explain it, make it concise…" autoFocus />}</label></div>{error ? <p className="command-mode-error" role="alert">{error}</p> : null}<div className="form-actions">{resultText ? <><Button variant="primary" icon={Check} onClick={() => void apply()}>Apply at selection</Button><Button variant="secondary" onClick={() => setResultText('')}>Back</Button></> : <><Button variant="primary" icon={Sparkle} onClick={() => void run()} disabled={busy || !state.sourceText.trim() || !instructions.trim()}>{busy ? 'Running…' : 'Ask Flow'}</Button><Button variant="secondary" onClick={() => void askPerplexity()} disabled={!state.sourceText.trim() || !instructions.trim()}>Ask Perplexity</Button></>}<Button variant="quiet" onClick={onClose}>Close</Button></div></section></div>
+}
 
 const OverlayPill = ({ overlay }: { overlay: OverlayState }) => {
   const busy = ['starting', 'recording', 'stopping', 'transcribing', 'processing', 'inserting'].includes(overlay.phase)
@@ -1145,6 +1287,7 @@ export function App() {
   const [notificationsOpen, setNotificationsOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [playingId, setPlayingId] = useState<string | null>(null)
+  const [commandMode, setCommandMode] = useState<CommandModeState | null>(null)
   const playingAudioRef = useRef<HTMLAudioElement | null>(null)
   const captureRef = useRef<{ sessionId: string; recorder: MediaRecorder; stream: MediaStream; chunks: Blob[]; startedAt: number; audioContext: AudioContext | null; levelTimer: number | null; cancelled: boolean } | null>(null)
   const pendingStopSessionsRef = useRef(new Set<string>())
@@ -1195,9 +1338,26 @@ export function App() {
       if (candidate.kind === 'shortcut-unavailable') { void refresh(); notify(candidate.error ?? `Could not register ${candidate.shortcut ?? 'the shortcut'}. Choose another combination.`, 'error') }
       if (candidate.kind === 'shortcut-ready') { void refresh(); notify(`Global dictation shortcut ready: ${(candidate.shortcut ?? '').replaceAll('Control', 'Ctrl').replaceAll('Super', 'Win')}`, 'neutral') }
       if (candidate.kind === 'shortcuts-ready') { void refresh(); notify('Push-to-talk and hands-free shortcuts are active globally.', 'neutral') }
+      if (candidate.kind === 'action-error') notify(candidate.error ?? 'The shortcut action could not be completed.', 'error')
+      if (candidate.kind === 'action-ready') notify(candidate.error ?? 'Shortcut action completed.', 'neutral')
+    })
+    const offCommand = api.on('command:open', (payload) => {
+      if (!payload || typeof payload !== 'object') return
+      const candidate = payload as CommandModeState
+      setCommandMode({ sourceText: typeof candidate.sourceText === 'string' ? candidate.sourceText : '', message: typeof candidate.message === 'string' ? candidate.message : undefined })
+    })
+    const offChanges = api.on('command:view-changes', (payload) => {
+      if (!payload || typeof payload !== 'object') return
+      const candidate = payload as CommandModeState
+      if (typeof candidate.sourceText === 'string' && typeof candidate.text === 'string') setCommandMode(candidate)
+    })
+    const offCancelAction = api.on('action:cancel', () => {
+      setCommandMode(null)
+      setNotificationsOpen(false)
+      setNotice(null)
     })
     if (!isOverlay && new URLSearchParams(window.location.search).get('smoke') === '1') void api.app.health()
-    return () => { offState(); offOverlay(); offLevel(); offToast() }
+    return () => { offState(); offOverlay(); offLevel(); offToast(); offCommand(); offChanges(); offCancelAction() }
   }, [isOverlay, notify, refresh])
 
   const cleanupCapture = useCallback(() => {
@@ -1393,5 +1553,5 @@ export function App() {
     }
   }
 
-  return <div className={`app-shell theme-${themePreview ?? data.settings.theme} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}><a className="skip-link" href="#main-content">Skip to content</a><AppChrome notificationsOpen={notificationsOpen} onNotifications={() => setNotificationsOpen((current) => !current)} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((current) => !current)} /><Sidebar page={page} setPage={setPage} collapsed={sidebarCollapsed} /><main className="main-canvas" id="main-content" tabIndex={-1}><div className="main-inner"><PageHeader page={page} />{notice ? <Notice message={notice.message} tone={notice.tone} onDismiss={() => setNotice(null)} /> : null}{renderPage()}</div></main></div>
+  return <div className={`app-shell theme-${themePreview ?? data.settings.theme} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}><a className="skip-link" href="#main-content">Skip to content</a><AppChrome notificationsOpen={notificationsOpen} onNotifications={() => setNotificationsOpen((current) => !current)} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={() => setSidebarCollapsed((current) => !current)} /><Sidebar page={page} setPage={setPage} collapsed={sidebarCollapsed} /><main className="main-canvas" id="main-content" tabIndex={-1}><div className="main-inner"><PageHeader page={page} />{notice ? <Notice message={notice.message} tone={notice.tone} onDismiss={() => setNotice(null)} /> : null}{renderPage()}</div></main>{commandMode ? <CommandModeModal state={commandMode} onClose={() => setCommandMode(null)} /> : null}</div>
 }

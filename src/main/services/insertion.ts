@@ -248,7 +248,71 @@ const sendPasteToTarget = (target: InsertionTarget | null): boolean => {
   return true
 }
 
+const keyInputScript = (handle: string, focusHandle: string, virtualKey: number, withControl: boolean): string => `
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class FlowerWhispKeyInput {
+  private const uint WM_KEYDOWN = 0x0100;
+  private const uint WM_KEYUP = 0x0101;
+  private const uint INPUT_KEYBOARD = 1;
+  private const uint KEYEVENTF_KEYUP = 2;
+  private const ushort VK_CONTROL = 0x11;
+  [StructLayout(LayoutKind.Explicit, Size = 40)]
+  private struct INPUT { [FieldOffset(0)] public uint type; [FieldOffset(8)] public KEYBDINPUT keyboardInput; }
+  [StructLayout(LayoutKind.Sequential)]
+  private struct KEYBDINPUT { public ushort virtualKey; public ushort scanCode; public uint flags; public uint time; public IntPtr extraInfo; }
+  [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
+  [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr window);
+  [DllImport("user32.dll", SetLastError=true)] private static extern uint SendInput(uint count, INPUT[] inputs, int size);
+  [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+  public static bool Send(IntPtr target, IntPtr focus, ushort key, bool withControl) {
+    if (GetForegroundWindow() != target) { BringWindowToTop(target); SetForegroundWindow(target); System.Threading.Thread.Sleep(100); }
+    if (GetForegroundWindow() == target) {
+      INPUT[] inputs = withControl
+        ? new INPUT[] {
+            new INPUT { type=INPUT_KEYBOARD, keyboardInput=new KEYBDINPUT { virtualKey=VK_CONTROL } },
+            new INPUT { type=INPUT_KEYBOARD, keyboardInput=new KEYBDINPUT { virtualKey=key } },
+            new INPUT { type=INPUT_KEYBOARD, keyboardInput=new KEYBDINPUT { virtualKey=key, flags=KEYEVENTF_KEYUP } },
+            new INPUT { type=INPUT_KEYBOARD, keyboardInput=new KEYBDINPUT { virtualKey=VK_CONTROL, flags=KEYEVENTF_KEYUP } },
+          }
+        : new INPUT[] {
+            new INPUT { type=INPUT_KEYBOARD, keyboardInput=new KEYBDINPUT { virtualKey=key } },
+            new INPUT { type=INPUT_KEYBOARD, keyboardInput=new KEYBDINPUT { virtualKey=key, flags=KEYEVENTF_KEYUP } },
+          };
+      if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT))) == inputs.Length) return true;
+    }
+    if (focus != IntPtr.Zero && !withControl) {
+      SendMessage(focus, WM_KEYDOWN, (IntPtr)key, IntPtr.Zero);
+      SendMessage(focus, WM_KEYUP, (IntPtr)key, IntPtr.Zero);
+      return true;
+    }
+    return false;
+  }
+}
+'@
+$target = [IntPtr]::new(${handle})
+$focus = [IntPtr]::new(${/^\d+$/.test(focusHandle) ? focusHandle : '0'})
+if ([FlowerWhispKeyInput]::Send($target, $focus, [uint16]${virtualKey}, $${withControl ? 'true' : 'false'})) { exit 0 }
+exit 1
+`
+
+const sendKeyToTarget = (target: InsertionTarget | null, virtualKey: number, withControl = false): boolean => {
+  if (process.platform !== 'win32' || !target || !/^\d+$/.test(target.handle)) return false
+  const execution = spawnSync(
+    powershellCommand,
+    ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', keyInputScript(target.handle, target.focusHandle ?? '', virtualKey, withControl)],
+    { encoding: 'utf8', windowsHide: true, timeout: 5_000 },
+  )
+  return !execution.error && execution.status === 0
+}
+
 export const captureInsertionTarget = (): InsertionTarget | null => captureForegroundWindow()
+
+export const sendEnterAtTarget = (target: InsertionTarget | null): boolean => sendKeyToTarget(target, 0x0D)
+
+export const copySelectionAtTarget = (target: InsertionTarget | null): boolean => sendKeyToTarget(target, 0x43, true)
 
 export const copyForManualPaste = (text: string): InsertionOutcome => {
   const normalized = text.trim()

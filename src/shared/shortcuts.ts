@@ -2,6 +2,48 @@ export const DEFAULT_TOGGLE_SHORTCUT = 'Control+Super+Space'
 export const DEFAULT_HOLD_SHORTCUT = 'Control+Super'
 export const COPILOT_SHORTCUT = 'F23'
 
+export type ShortcutActionId =
+  | 'pushToTalk'
+  | 'handsFree'
+  | 'pressEnter'
+  | 'commandMode'
+  | 'pasteLastTranscript'
+  | 'copyLastTranscript'
+  | 'openScratchpad'
+  | 'transformViewChanges'
+  | 'cancel'
+
+export type ShortcutBindings = Record<ShortcutActionId, string[]>
+
+export const SHORTCUT_ACTION_IDS: ShortcutActionId[] = [
+  'pushToTalk',
+  'handsFree',
+  'pressEnter',
+  'commandMode',
+  'pasteLastTranscript',
+  'copyLastTranscript',
+  'openScratchpad',
+  'transformViewChanges',
+  'cancel',
+]
+
+export const DEFAULT_SHORTCUT_BINDINGS: ShortcutBindings = {
+  pushToTalk: [DEFAULT_HOLD_SHORTCUT],
+  handsFree: [DEFAULT_TOGGLE_SHORTCUT],
+  pressEnter: [],
+  commandMode: [],
+  pasteLastTranscript: [],
+  copyLastTranscript: [],
+  openScratchpad: [],
+  transformViewChanges: [],
+  cancel: [],
+}
+
+export const MOUSE_SHORTCUTS = ['MouseMiddle', 'Mouse4', 'Mouse5'] as const
+export const DOUBLE_TAP_MOUSE_SHORTCUTS = ['DoubleTapMouseMiddle', 'DoubleTapMouse4', 'DoubleTapMouse5'] as const
+const mouseShortcuts = new Set<string>(MOUSE_SHORTCUTS)
+const doubleTapMouseShortcuts = new Set<string>(DOUBLE_TAP_MOUSE_SHORTCUTS)
+
 const shortcutModifiers = new Set(['Control', 'CommandOrControl', 'Alt', 'Shift', 'Super'])
 const shortcutKeys = new Set([
   'Space',
@@ -39,7 +81,7 @@ export const SHORTCUT_REQUIREMENT = 'Use any combination with at least one modif
 export const HOLD_SHORTCUT_REQUIREMENT = 'Hold one or more modifier keys, a modifier plus a final key, or a function key. Dictation starts when the complete combination is down and finishes when you release it.'
 
 export interface ShortcutKeyEvent {
-  type?: 'keydown' | 'keyup'
+  type?: 'keydown' | 'keyup' | 'mousedown' | 'mouseup'
   key: string
   code?: string
   ctrlKey?: boolean
@@ -47,6 +89,40 @@ export interface ShortcutKeyEvent {
   shiftKey?: boolean
   metaKey?: boolean
   getModifierState?: (key: string) => boolean
+}
+
+export const isMouseShortcut = (value: unknown): value is string => typeof value === 'string' && mouseShortcuts.has(value)
+export const isDoubleTapMouseShortcut = (value: unknown): value is string => typeof value === 'string' && doubleTapMouseShortcuts.has(value)
+export const isMouseGesture = (value: unknown): value is string => isMouseShortcut(value) || isDoubleTapMouseShortcut(value)
+
+const isUnmodifiedFunctionKey = (value: string): boolean => isFunctionKey(value)
+
+/** Validate a binding according to the action that will own it. */
+export const isValidShortcutForAction = (action: ShortcutActionId, value: unknown): boolean => {
+  if (typeof value !== 'string' || !value) return false
+  if (action === 'pushToTalk') return isMouseShortcut(value) || isValidHoldShortcut(value)
+  if (isMouseGesture(value)) return true
+  if (action === 'commandMode') return isValidHoldShortcut(value)
+  if (action === 'cancel' && (value === 'Escape' || value === 'Esc')) return true
+  return isValidShortcut(value) || isUnmodifiedFunctionKey(value)
+}
+
+export const normalizeShortcutBindings = (
+  value: unknown,
+  legacy?: { holdShortcut?: unknown; toggleShortcut?: unknown },
+): ShortcutBindings => {
+  const source = value && typeof value === 'object' ? value as Partial<Record<ShortcutActionId, unknown>> : {}
+  const result = Object.fromEntries(SHORTCUT_ACTION_IDS.map((action) => {
+    const saved = Array.isArray(source[action]) ? source[action] : undefined
+    const migrated = action === 'pushToTalk' && typeof legacy?.holdShortcut === 'string'
+      ? [legacy.holdShortcut]
+      : action === 'handsFree' && typeof legacy?.toggleShortcut === 'string'
+        ? [legacy.toggleShortcut]
+        : DEFAULT_SHORTCUT_BINDINGS[action]
+    const unique = [...new Set((saved ?? migrated).filter((binding): binding is string => typeof binding === 'string' && isValidShortcutForAction(action, binding)))]
+    return [action, unique]
+  }))
+  return result as ShortcutBindings
 }
 
 const shortcutKeyAliases: Record<string, string> = {

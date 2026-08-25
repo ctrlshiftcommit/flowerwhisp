@@ -4163,6 +4163,53 @@ body {
   gap: 8px;
 }
 
+.shortcut-action-editor {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.shortcut-binding-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.shortcut-binding {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 3px 2px 10px;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 9px;
+  background: var(--color-surface);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.shortcut-binding.is-unavailable {
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 45%, var(--color-border));
+}
+
+.shortcut-binding .icon-button {
+  width: 27px;
+  height: 27px;
+}
+
+.shortcut-action-editor .shortcut-recorder {
+  width: min(100%, 320px);
+  min-height: 42px;
+}
+
+.shortcut-action-editor .shortcut-status {
+  align-self: flex-end;
+}
+
 .shortcut-setting-control .shortcut-recorder {
   width: min(100%, 320px);
   min-height: 46px;
@@ -4244,6 +4291,48 @@ body {
   font-size: 10px;
   line-height: 1.35;
   text-align: right;
+}
+
+.command-mode-modal {
+  width: min(860px, calc(100vw - 56px));
+  max-height: calc(100vh - 56px);
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 18px;
+  background: var(--color-canvas);
+  box-shadow: var(--shadow-overlay);
+}
+
+.command-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin: 18px 0 12px;
+}
+
+.command-mode-grid label > span {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.command-mode-grid textarea {
+  width: 100%;
+  min-height: 168px;
+  resize: vertical;
+}
+
+.command-mode-error {
+  margin: 0 0 12px;
+  color: var(--color-danger);
+  font-size: 11.5px;
+}
+
+@media (max-width: 760px) {
+  .command-mode-grid { grid-template-columns: 1fr; }
 }
 
 /* The overlay has its own fixed, transparent window. Keep its compact pill

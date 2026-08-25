@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 
 import type { CleanupLevel, ProviderId, PublicSettings } from '../../shared/ipc'
-import { buildCleanupSystemPrompt } from '../prompts'
+import { buildCleanupSystemPrompt, buildTransformSystemPrompt } from '../prompts'
 
 export const TRANSCRIPTION_MODELS = ['whisper-large-v3-turbo', 'whisper-large-v3'] as const
 export const LLM_MODELS = ['openai/gpt-oss-20b', 'openai/gpt-oss-120b'] as const
@@ -124,6 +124,56 @@ export class GroqProvider {
       return { text: parsed.text.trim(), changed: parsed.text.trim() !== text.trim(), model: settings.llmModel }
     } catch {
       throw new ProviderError('The cleanup response failed validation. The safe transcript is still available.', 'invalid-output')
+    }
+  }
+
+  public async transform(
+    text: string,
+    instructions: string,
+    settings: Pick<PublicSettings, 'llmModel' | 'language' | 'cleanupLevel' | 'defaultStyle'>,
+    styleRules: string[],
+  ): Promise<TextCleanupResult> {
+    assertModel(settings.llmModel, LLM_MODELS, 'LLM')
+    const apiKey = await this.getApiKey()
+    if (!apiKey) throw new ProviderError('Add a Groq API key in Settings before using Command Mode.', 'missing-key')
+    const system = buildTransformSystemPrompt({
+      cleanupLevel: settings.cleanupLevel,
+      language: settings.language,
+      styleId: settings.defaultStyle,
+      styleRules,
+      transform: {
+        name: 'Command Mode',
+        description: 'A one-off instruction supplied by the user.',
+        instructions,
+      },
+    })
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: settings.llmModel,
+        temperature: 0.1,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: JSON.stringify({ sourceText: text, transformInstructions: instructions }) },
+        ],
+      }),
+      signal: AbortSignal.timeout(45_000),
+    }).catch(() => {
+      throw new ProviderError('Command Mode could not reach Groq.', 'network')
+    })
+    if (!response.ok) throw new ProviderError('Groq rejected the Command Mode request.', 'provider')
+    const payload = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> }
+    const content = payload.choices?.[0]?.message?.content
+    if (typeof content !== 'string') throw new ProviderError('Groq returned an invalid Command Mode response.', 'invalid-output')
+    try {
+      const parsed = JSON.parse(content) as { status?: string; text?: unknown }
+      if (!['ok', 'unchanged'].includes(parsed.status ?? '') || typeof parsed.text !== 'string' || !parsed.text.trim()) throw new Error('invalid transform')
+      const transformed = parsed.text.trim()
+      return { text: transformed, changed: transformed !== text.trim(), model: settings.llmModel }
+    } catch {
+      throw new ProviderError('The Command Mode response failed validation.', 'invalid-output')
     }
   }
 }

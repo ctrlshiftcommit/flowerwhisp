@@ -126,4 +126,11 @@ export class DictationPipeline {
       aiFixCount: changedWordCount(cleanedText, finalText),
     }
   }
+
+  public async transformText(sourceText: string, instructions: string, settings: PublicSettings): Promise<string> {
+    const snapshot = await this.store.load()
+    const style = snapshot.styles.find((candidate) => candidate.id === settings.defaultStyle)
+    const transformed = await this.groq.transform(sourceText, instructions, settings, style?.rules ?? [])
+    return transformed.text
+  }
 }

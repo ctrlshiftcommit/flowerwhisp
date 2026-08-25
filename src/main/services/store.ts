@@ -11,7 +11,14 @@ import type {
   TransformProfile,
   UsageDay,
 } from '../../shared/ipc'
-import { DEFAULT_HOLD_SHORTCUT, DEFAULT_TOGGLE_SHORTCUT, isValidHoldShortcut, isValidShortcut } from '../../shared/shortcuts'
+import {
+  DEFAULT_HOLD_SHORTCUT,
+  DEFAULT_SHORTCUT_BINDINGS,
+  DEFAULT_TOGGLE_SHORTCUT,
+  isValidHoldShortcut,
+  isValidShortcut,
+  normalizeShortcutBindings,
+} from '../../shared/shortcuts'
 import { DEFAULT_CLEANUP_PROMPTS } from '../../shared/promptDefaults'
 
 export interface AppSnapshot {
@@ -39,6 +46,7 @@ export const defaultSettings: PublicSettings = {
   // delivery, while toggle is a one-shot accelerator pressed a second time.
   holdShortcut: DEFAULT_HOLD_SHORTCUT,
   toggleShortcut: DEFAULT_TOGGLE_SHORTCUT,
+  shortcutBindings: Object.fromEntries(Object.entries(DEFAULT_SHORTCUT_BINDINGS).map(([action, bindings]) => [action, [...bindings]])) as PublicSettings['shortcutBindings'],
   microphoneLabel: 'System default microphone',
   localCommand: '',
   localWorkingDirectory: '',
@@ -125,6 +133,10 @@ export class JsonStateStore {
       const parsed = JSON.parse(raw) as Partial<AppSnapshot>
       const defaults = emptySnapshot()
       const mergedSettings = { ...defaults.settings, ...(parsed.settings ?? {}) }
+      const shortcutBindings = normalizeShortcutBindings(parsed.settings?.shortcutBindings, {
+        holdShortcut: parsed.settings?.holdShortcut,
+        toggleShortcut: parsed.settings?.toggleShortcut,
+      })
       const savedCleanupPrompts: Partial<Record<CleanupLevel, string>> = parsed.settings?.cleanupPrompts ?? {}
       const cleanupPrompts = { ...defaults.settings.cleanupPrompts }
       for (const level of ['none', 'light', 'medium'] as const) {
@@ -140,6 +152,7 @@ export class JsonStateStore {
           cleanupPrompts,
           holdShortcut: isValidHoldShortcut(mergedSettings.holdShortcut) ? mergedSettings.holdShortcut : defaults.settings.holdShortcut,
           toggleShortcut: isValidShortcut(mergedSettings.toggleShortcut) ? mergedSettings.toggleShortcut : defaults.settings.toggleShortcut,
+          shortcutBindings,
         },
         records: Array.isArray(parsed.records) ? parsed.records : [],
         dictionary: Array.isArray(parsed.dictionary) ? parsed.dictionary : [],

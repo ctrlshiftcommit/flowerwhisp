@@ -60,6 +60,11 @@ const api: FlowerWhispApi = {
     read: () => ipcRenderer.invoke('scratchpad:read'),
     save: (value) => ipcRenderer.invoke('scratchpad:save', value),
   },
+  command: {
+    run: (sourceText, instructions) => ipcRenderer.invoke('command:run', sourceText, instructions),
+    apply: (text) => ipcRenderer.invoke('command:apply', text),
+    askPerplexity: (sourceText, question) => ipcRenderer.invoke('command:perplexity', sourceText, question),
+  },
   on,
 }
 

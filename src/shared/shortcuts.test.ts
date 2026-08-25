@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { isValidHoldShortcut, isValidShortcut, shortcutFromEvent } from './shortcuts'
+import {
+  isValidHoldShortcut,
+  isValidShortcut,
+  isValidShortcutForAction,
+  normalizeShortcutBindings,
+  shortcutFromEvent,
+} from './shortcuts'
 
 describe('isValidShortcut', () => {
   it('accepts common toggle accelerators with a modifier and key', () => {
@@ -55,5 +61,40 @@ describe('isValidHoldShortcut', () => {
     expect(isValidHoldShortcut('Tab')).toBe(false)
     expect(isValidHoldShortcut('Control+Control')).toBe(false)
     expect(isValidHoldShortcut('Control+A+B')).toBe(false)
+  })
+})
+
+describe('action shortcut bindings', () => {
+  it('supports the action-specific keyboard and mouse gestures used by Flow', () => {
+    expect(isValidShortcutForAction('pushToTalk', 'Control')).toBe(true)
+    expect(isValidShortcutForAction('pushToTalk', 'MouseMiddle')).toBe(true)
+    expect(isValidShortcutForAction('handsFree', 'DoubleTapMouseMiddle')).toBe(true)
+    expect(isValidShortcutForAction('handsFree', 'Control+Space')).toBe(true)
+    expect(isValidShortcutForAction('commandMode', 'Control+Alt')).toBe(true)
+    expect(isValidShortcutForAction('cancel', 'Escape')).toBe(true)
+  })
+
+  it('keeps unsafe ordinary single keys out of trigger actions', () => {
+    expect(isValidShortcutForAction('pasteLastTranscript', 'Z')).toBe(false)
+    expect(isValidShortcutForAction('pressEnter', 'B')).toBe(false)
+    expect(isValidShortcutForAction('handsFree', 'Space')).toBe(false)
+  })
+
+  it('migrates the existing dictation shortcuts without assigning new actions', () => {
+    const bindings = normalizeShortcutBindings(undefined, {
+      holdShortcut: 'Control',
+      toggleShortcut: 'Control+Space',
+    })
+    expect(bindings.pushToTalk).toEqual(['Control'])
+    expect(bindings.handsFree).toEqual(['Control+Space'])
+    expect(bindings.pressEnter).toEqual([])
+    expect(bindings.commandMode).toEqual([])
+  })
+
+  it('drops duplicates and invalid saved bindings', () => {
+    const bindings = normalizeShortcutBindings({
+      copyLastTranscript: ['Alt+Shift+X', 'Alt+Shift+X', 'X'],
+    })
+    expect(bindings.copyLastTranscript).toEqual(['Alt+Shift+X'])
   })
 })

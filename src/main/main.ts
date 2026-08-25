@@ -31,11 +31,29 @@ import type {
   DictationPhase,
   OverlayState,
   PublicSettings,
+  ShortcutActionId,
+  ShortcutBindings,
 } from '../shared/ipc'
 import type { DictationRecord, DictionaryEntry, Snippet, TransformProfile } from '../shared/ipc'
-import { isValidHoldShortcut, isValidShortcut } from '../shared/shortcuts'
+import {
+  isDoubleTapMouseShortcut,
+  isMouseGesture,
+  isMouseShortcut,
+  isValidHoldShortcut,
+  isValidShortcut,
+  isValidShortcutForAction,
+  normalizeShortcutBindings,
+  SHORTCUT_ACTION_IDS,
+} from '../shared/shortcuts'
 import { DictationPipeline } from './services/pipeline'
-import { captureInsertionTarget, copyForManualPaste, insertAtTarget, type InsertionTarget } from './services/insertion'
+import {
+  captureInsertionTarget,
+  copyForManualPaste,
+  copySelectionAtTarget,
+  insertAtTarget,
+  sendEnterAtTarget,
+  type InsertionTarget,
+} from './services/insertion'
 import { SecretStore } from './services/secrets'
 import { JsonStateStore, type AppSnapshot } from './services/store'
 import { countWords } from './domain'
@@ -90,10 +108,22 @@ let shortcutRegistrationError = 'That shortcut is unavailable or already claimed
 let holdShortcutRegistrationError = 'The hold shortcut could not be installed.'
 let lastShortcutRegistrationError = ''
 let shortcutSettingsBeforeRecording: Pick<PublicSettings, 'holdShortcut' | 'toggleShortcut'> | null = null
+let shortcutBindingsBeforeRecording: ShortcutBindings | null = null
 let shortcutInitialization: Promise<boolean> | null = null
 let allowQuit = false
 let pillEnabled = true
 let recordingsDirectory = ''
+const actionHookProcesses = new Map<string, ShortcutHookProcess>()
+let shortcutRecordMouseHookProcess: ShortcutHookProcess | null = null
+let pendingCommandTarget: InsertionTarget | null = null
+let lastTransformChange: { sourceText: string; text: string; instructions: string } | null = null
+let lastTranscriptText = ''
+
+const emptyShortcutRegistrations = (): BootstrapPayload['shortcutRegistrations'] => Object.fromEntries(
+  SHORTCUT_ACTION_IDS.map((action) => [action, { registered: [], unavailable: [] }]),
+) as unknown as BootstrapPayload['shortcutRegistrations']
+
+let shortcutRegistrations = emptyShortcutRegistrations()
 
 type ActiveSession = {
   id: string
@@ -351,6 +381,7 @@ const buildBootstrap = async (): Promise<BootstrapPayload> => {
     registeredHoldShortcut,
     shortcutRegistered,
     registeredShortcut,
+    shortcutRegistrations,
     capabilities: {
       microphone: true,
       cloudTranscription: true,
@@ -462,6 +493,7 @@ public static class FlowerWhispKeyboardHook {
   private static bool wantAlt;
   private static bool wantWin;
   private static bool holdActive;
+  private static bool triggerActive;
 
   private static uint KeyCode(string part) {
     if (part == "Space") return 0x20;
@@ -527,11 +559,17 @@ public static class FlowerWhispKeyboardHook {
       var isDown = wParam.ToInt32() == WM_KEYDOWN || wParam.ToInt32() == WM_SYSKEYDOWN;
       var wasDown = Down.Contains(data.vkCode);
       if (isDown) Down.Add(data.vkCode); else Down.Remove(data.vkCode);
-      if (isDown && !wasDown && IsFinalKey(data.vkCode) && MatchesModifiers()) {
+      var modifiersMatch = MatchesModifiers();
+      var shouldTrigger = finalKey != 0
+        ? isDown && !wasDown && IsFinalKey(data.vkCode) && modifiersMatch
+        : isDown && !wasDown && modifiersMatch && !triggerActive;
+      if (shouldTrigger) {
+        triggerActive = true;
         Console.WriteLine("TRIGGER");
         Console.Out.Flush();
         return (IntPtr)1;
       }
+      if (!modifiersMatch) triggerActive = false;
     }
     return CallNextHookEx(hook, code, wParam, lParam);
   }
@@ -682,10 +720,11 @@ public static class FlowerWhispKeyboardHook {
   }
 
   public static void Run(string shortcut) {
-    if (!ConfigureShortcut(shortcut) || finalKey == 0 || (!wantControl && !wantShift && !wantAlt && !wantWin)) {
+    if (!ConfigureShortcut(shortcut)) {
       WriteEvent("ERROR|CONFIGURE|" + shortcut);
       return;
     }
+    triggerActive = false;
     callback = OnKeyboardEvent;
     hook = SetWindowsHookEx(WH_KEYBOARD_LL, callback, GetModuleHandle(null), 0);
     if (hook == IntPtr.Zero) {
@@ -735,6 +774,81 @@ if ($env:FLOWERWHISP_RECORDING -eq '1') {
 }
 `
 
+const windowsMouseHookScript = String.raw`
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FlowerWhispMouseHook {
+  private const int WH_MOUSE_LL = 14;
+  private const int WM_MBUTTONDOWN = 0x0207;
+  private const int WM_MBUTTONUP = 0x0208;
+  private const int WM_XBUTTONDOWN = 0x020B;
+  private const int WM_XBUTTONUP = 0x020C;
+  [StructLayout(LayoutKind.Sequential)] private struct POINT { public int x; public int y; }
+  [StructLayout(LayoutKind.Sequential)] private struct MSLLHOOKSTRUCT { public POINT point; public uint mouseData; public uint flags; public uint time; public UIntPtr extraInfo; }
+  [StructLayout(LayoutKind.Sequential)] private struct MSG { public IntPtr hwnd; public uint message; public UIntPtr wParam; public IntPtr lParam; public uint time; public POINT point; }
+  private delegate IntPtr LowLevelMouseProc(int code, IntPtr wParam, IntPtr lParam);
+  [DllImport("user32.dll", SetLastError=true)] private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelMouseProc callback, IntPtr module, uint threadId);
+  [DllImport("user32.dll", SetLastError=true)] private static extern bool UnhookWindowsHookEx(IntPtr hook);
+  [DllImport("user32.dll")] private static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] private static extern IntPtr GetModuleHandle(string moduleName);
+  [DllImport("user32.dll")] private static extern int GetMessage(out MSG message, IntPtr hwnd, uint min, uint max);
+  [DllImport("user32.dll")] private static extern bool TranslateMessage(ref MSG message);
+  [DllImport("user32.dll")] private static extern IntPtr DispatchMessage(ref MSG message);
+  private static LowLevelMouseProc callback;
+  private static IntPtr hook;
+  private static string wanted = "";
+  private static string mode = "trigger";
+  private static long lastClick;
+  private static string ButtonName(int message, MSLLHOOKSTRUCT data) {
+    if (message == WM_MBUTTONDOWN || message == WM_MBUTTONUP) return "MouseMiddle";
+    if (message == WM_XBUTTONDOWN || message == WM_XBUTTONUP) {
+      var button = (data.mouseData >> 16) & 0xffff;
+      if (button == 1) return "Mouse4";
+      if (button == 2) return "Mouse5";
+    }
+    return "";
+  }
+  private static bool IsDown(int message) { return message == WM_MBUTTONDOWN || message == WM_XBUTTONDOWN; }
+  private static bool IsUp(int message) { return message == WM_MBUTTONUP || message == WM_XBUTTONUP; }
+  private static void Write(string value) { Console.WriteLine(value); Console.Out.Flush(); }
+  private static IntPtr OnMouse(int code, IntPtr wParam, IntPtr lParam) {
+    if (code >= 0) {
+      var message = wParam.ToInt32();
+      var data = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
+      var button = ButtonName(message, data);
+      if (button.Length > 0) {
+        if (mode == "record") Write((IsDown(message) ? "MOUSEDOWN|" : "MOUSEUP|") + button);
+        else if (button == wanted) {
+          if (mode == "hold") {
+            if (IsDown(message)) Write("HOLD_DOWN"); else if (IsUp(message)) Write("HOLD_UP");
+          } else if (mode == "double" && IsDown(message)) {
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            if (now - lastClick <= 430) { lastClick = 0; Write("TRIGGER"); }
+            else lastClick = now;
+          } else if (mode == "trigger" && IsDown(message)) Write("TRIGGER");
+          if (mode != "record") return (IntPtr)1;
+        }
+      }
+    }
+    return CallNextHookEx(hook, code, wParam, lParam);
+  }
+  public static void Run(string shortcut, string requestedMode) {
+    mode = requestedMode;
+    wanted = shortcut.Replace("DoubleTap", "");
+    callback = OnMouse;
+    hook = SetWindowsHookEx(WH_MOUSE_LL, callback, GetModuleHandle(null), 0);
+    if (hook == IntPtr.Zero) { Write("ERROR|HOOK|" + Marshal.GetLastWin32Error().ToString()); return; }
+    Write("READY");
+    MSG message;
+    while (GetMessage(out message, IntPtr.Zero, 0, 0) > 0) { TranslateMessage(ref message); DispatchMessage(ref message); }
+    UnhookWindowsHookEx(hook);
+  }
+}
+'@
+[FlowerWhispMouseHook]::Run($env:FLOWERWHISP_MOUSE_SHORTCUT, $env:FLOWERWHISP_MOUSE_MODE)
+`
+
 const isWindowsSpaceShortcut = (shortcut: string): boolean => {
   const parts = new Set(shortcut.split('+').filter(Boolean))
   return parts.has('Super') && parts.has('Space')
@@ -769,6 +883,145 @@ const stopWindowsShortcutRecorder = (): void => {
   const child = shortcutRecordHookProcess
   shortcutRecordHookProcess = null
   terminateShortcutHookProcess(child)
+  const mouseChild = shortcutRecordMouseHookProcess
+  shortcutRecordMouseHookProcess = null
+  terminateShortcutHookProcess(mouseChild)
+}
+
+const stopWindowsActionHooks = (): void => {
+  for (const child of actionHookProcesses.values()) terminateShortcutHookProcess(child)
+  actionHookProcesses.clear()
+}
+
+const startWindowsActionHook = (
+  action: ShortcutActionId,
+  binding: string,
+  mode: 'trigger' | 'hold',
+  onTrigger: () => void,
+): Promise<boolean> => {
+  if (process.platform !== 'win32') return Promise.resolve(false)
+  const key = `${action}:${binding}`
+  const mouse = isMouseGesture(binding)
+  const child = spawn(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', mouse ? windowsMouseHookScript : windowsShortcutHookScript],
+    {
+      windowsHide: true,
+      env: mouse
+        ? {
+            ...process.env,
+            FLOWERWHISP_MOUSE_SHORTCUT: binding,
+            FLOWERWHISP_MOUSE_MODE: mode === 'hold' ? 'hold' : isDoubleTapMouseShortcut(binding) ? 'double' : 'trigger',
+          }
+        : { ...process.env, FLOWERWHISP_SHORTCUT: binding, ...(mode === 'hold' ? { FLOWERWHISP_HOLD: '1' } : {}) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  ) as ShortcutHookProcess
+  actionHookProcesses.set(key, child)
+  let buffer = ''
+  let ready = false
+  let settled = false
+  let timeout: NodeJS.Timeout | null = null
+  const fail = (): void => {
+    if (settled && ready) return
+    settled = true
+    if (timeout) clearTimeout(timeout)
+    timeout = null
+    if (actionHookProcesses.get(key) === child) actionHookProcesses.delete(key)
+    terminateShortcutHookProcess(child)
+  }
+  child.stdout.on('data', (chunk: Buffer | string) => {
+    buffer += chunk.toString()
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (line === 'READY') {
+        ready = true
+        settled = true
+        if (timeout) clearTimeout(timeout)
+        timeout = null
+      } else if (line === 'TRIGGER') onTrigger()
+      else if (line === 'HOLD_DOWN') holdShortcutPressed()
+      else if (line === 'HOLD_UP') holdShortcutReleased()
+      else if (line.startsWith('ERROR')) {
+        console.error(`[shortcut:${action}] native helper reported ${line}`)
+        fail()
+      }
+    }
+  })
+  child.stderr.on('data', (chunk: Buffer | string) => console.error(`[shortcut:${action}] ${chunk.toString().trim()}`))
+  child.once('error', fail)
+  child.once('close', () => {
+    if (!ready) fail()
+    if (actionHookProcesses.get(key) === child) {
+      actionHookProcesses.delete(key)
+      const registration = shortcutRegistrations[action]
+      registration.registered = registration.registered.filter((candidate) => candidate !== binding)
+      if (!registration.unavailable.includes(binding)) registration.unavailable.push(binding)
+      send('toast', { kind: 'shortcut-unavailable', shortcut: binding, error: `${binding} stopped listening and is no longer active.` })
+    }
+  })
+  timeout = setTimeout(fail, 3_000)
+  return new Promise((resolve) => {
+    const check = (): void => {
+      if (ready) resolve(true)
+      else if (actionHookProcesses.get(key) !== child) resolve(false)
+      else setTimeout(check, 25)
+    }
+    check()
+  })
+}
+
+const startWindowsMouseShortcutRecorder = (): Promise<boolean> => {
+  if (process.platform !== 'win32') return Promise.resolve(false)
+  const child = spawn(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', windowsMouseHookScript],
+    {
+      windowsHide: true,
+      env: { ...process.env, FLOWERWHISP_MOUSE_SHORTCUT: '', FLOWERWHISP_MOUSE_MODE: 'record' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  ) as ShortcutHookProcess
+  shortcutRecordMouseHookProcess = child
+  let buffer = ''
+  let ready = false
+  let timeout: NodeJS.Timeout | null = null
+  const fail = (): void => {
+    if (timeout) clearTimeout(timeout)
+    timeout = null
+    if (shortcutRecordMouseHookProcess === child) shortcutRecordMouseHookProcess = null
+    terminateShortcutHookProcess(child)
+  }
+  child.stdout.on('data', (chunk: Buffer | string) => {
+    buffer += chunk.toString()
+    const lines = buffer.split(/\r?\n/)
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (line === 'READY') {
+        ready = true
+        if (timeout) clearTimeout(timeout)
+        timeout = null
+        continue
+      }
+      const type = line.startsWith('MOUSEDOWN|') ? 'mousedown' : line.startsWith('MOUSEUP|') ? 'mouseup' : null
+      if (!type || shortcutRecordMouseHookProcess !== child) continue
+      const [, keyName] = line.split('|')
+      if (keyName) send('shortcut:record', { type, key: keyName, code: keyName })
+    }
+  })
+  child.stderr.on('data', (chunk: Buffer | string) => console.error(`[shortcut-recorder:mouse] ${chunk.toString().trim()}`))
+  child.once('error', fail)
+  child.once('close', () => { if (!ready) fail(); if (shortcutRecordMouseHookProcess === child) shortcutRecordMouseHookProcess = null })
+  timeout = setTimeout(fail, 3_000)
+  return new Promise((resolve) => {
+    const check = (): void => {
+      if (ready) resolve(true)
+      else if (shortcutRecordMouseHookProcess !== child) resolve(false)
+      else setTimeout(check, 25)
+    }
+    check()
+  })
 }
 
 const startWindowsShortcutRecorder = (): Promise<boolean> => {
@@ -1087,7 +1340,106 @@ const shortcutHandler = (): void => {
   if (activeSession.phase === 'starting' || activeSession.phase === 'recording') void stopSession()
 }
 
-type DictationShortcutSettings = Pick<PublicSettings, 'holdShortcut' | 'toggleShortcut'>
+const showMainPage = (page: BootstrapPayload['settings'] extends never ? never : 'dictation' | 'transforms' | 'scratchpad' | 'settings'): void => {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+  mainWindow.webContents.send('toast', { kind: 'navigate', page })
+}
+
+const mostRecentTranscript = async (): Promise<string> => {
+  if (lastTranscriptText.trim()) return lastTranscriptText.trim()
+  const snapshot = await getSnapshot()
+  return snapshot.records.find((record) => record.finalText.trim())?.finalText.trim() ?? ''
+}
+
+const openCommandMode = async (): Promise<void> => {
+  const target = captureExternalInsertionTarget()
+  pendingCommandTarget = target
+  const previousClipboard = {
+    text: clipboard.readText(),
+    html: clipboard.readHTML(),
+    rtf: clipboard.readRTF(),
+    image: clipboard.readImage(),
+  }
+  clipboard.clear()
+  const copySent = copySelectionAtTarget(target)
+  if (copySent) await new Promise((resolve) => setTimeout(resolve, 180))
+  const sourceText = copySent ? clipboard.readText().trim() : ''
+  clipboard.write(previousClipboard)
+  showMainPage('transforms')
+  send('command:open', {
+    sourceText,
+    message: sourceText ? undefined : 'Select text in another app before opening Command Mode.',
+  })
+}
+
+const triggerShortcutAction = (action: ShortcutActionId, afterRelease = false): void => {
+  if (shortcutRecording) return
+  if (!afterRelease && !['handsFree', 'cancel'].includes(action)) {
+    // Immediate input actions must run after the accelerator's modifiers are
+    // physically released; otherwise Ctrl/Alt/Shift can leak into the
+    // synthetic Enter, Copy, or Paste chord sent to the target application.
+    setTimeout(() => triggerShortcutAction(action, true), 140)
+    return
+  }
+  if (action === 'handsFree') {
+    shortcutHandler()
+    return
+  }
+  if (action === 'pressEnter') {
+    const sent = sendEnterAtTarget(captureExternalInsertionTarget())
+    if (!sent) send('toast', { kind: 'action-error', error: 'FlowerWhisp could not send Enter to the active application.' })
+    return
+  }
+  if (action === 'commandMode') {
+    void openCommandMode()
+    return
+  }
+  if (action === 'pasteLastTranscript') {
+    const target = captureExternalInsertionTarget()
+    void mostRecentTranscript().then((text) => {
+      if (!text) {
+        send('toast', { kind: 'action-error', error: 'There is no previous transcript to paste.' })
+        return
+      }
+      const insertion = insertAtTarget(text, target)
+      send('toast', { kind: insertion.outcome === 'inserted' ? 'action-ready' : 'action-error', error: insertion.message })
+    })
+    return
+  }
+  if (action === 'copyLastTranscript') {
+    void mostRecentTranscript().then((text) => {
+      if (!text) send('toast', { kind: 'action-error', error: 'There is no previous transcript to copy.' })
+      else {
+        clipboard.writeText(text)
+        send('toast', { kind: 'action-ready', error: 'Last transcript copied.' })
+      }
+    })
+    return
+  }
+  if (action === 'openScratchpad') {
+    showMainPage('scratchpad')
+    return
+  }
+  if (action === 'transformViewChanges') {
+    showMainPage('transforms')
+    if (lastTransformChange) send('command:view-changes', lastTransformChange)
+    else send('toast', { kind: 'action-ready', error: 'There are no Transform changes to show yet.' })
+    return
+  }
+  if (action === 'cancel') {
+    if (activeSession) void cancelSession()
+    else {
+      publishOverlay({ ...defaultOverlay() })
+      if (pillEnabled) showOverlay()
+    }
+    send('action:cancel', {})
+  }
+}
+
+type DictationShortcutSettings = Pick<PublicSettings, 'holdShortcut' | 'toggleShortcut' | 'shortcutBindings'>
 
 const shortcutSignature = (shortcut: string): string => shortcut.split('+').filter(Boolean).sort().join('+')
 
@@ -1100,13 +1452,15 @@ const shortcutIsStrictSubset = (candidate: string, complete: string): boolean =>
 const unregisterShortcuts = (): void => {
   if (pendingHoldReleaseTimer) clearTimeout(pendingHoldReleaseTimer)
   pendingHoldReleaseTimer = null
-  if (registeredShortcut) globalShortcut.unregister(registeredShortcut)
+  globalShortcut.unregisterAll()
   stopWindowsShortcutHook()
   stopWindowsHoldShortcutHook()
+  stopWindowsActionHooks()
   registeredShortcut = ''
   shortcutRegistered = false
   registeredHoldShortcut = ''
   holdShortcutRegistered = false
+  shortcutRegistrations = emptyShortcutRegistrations()
 }
 
 const attemptRegisterToggleShortcut = async (shortcut: string, preferWindowsHook = false): Promise<boolean> => {
@@ -1157,46 +1511,60 @@ const attemptRegisterHoldShortcut = async (shortcut: string): Promise<boolean> =
 const registerShortcuts = async (requested?: DictationShortcutSettings, announce = true): Promise<boolean> => {
   if (shortcutRecording) return false
   const snapshot = requested ?? (await getSnapshot()).settings
-  const requestedToggleShortcut = snapshot.toggleShortcut
-  const requestedHoldShortcut = snapshot.holdShortcut
+  const bindings = normalizeShortcutBindings(snapshot.shortcutBindings, snapshot)
   unregisterShortcuts()
   lastShortcutRegistrationError = ''
-
-  if (shortcutSignature(requestedToggleShortcut) === shortcutSignature(requestedHoldShortcut)) {
-    shortcutRegistrationError = 'Hold to dictate and toggle dictation must use different combinations.'
-    holdShortcutRegistrationError = shortcutRegistrationError
-    lastShortcutRegistrationError = shortcutRegistrationError
-    if (announce) send('toast', { kind: 'shortcut-unavailable', shortcut: requestedToggleShortcut, error: shortcutRegistrationError })
-    send('toast', { kind: 'refresh' })
-    return false
+  const owners = new Map<string, ShortcutActionId>()
+  for (const action of SHORTCUT_ACTION_IDS) {
+    for (const binding of bindings[action]) {
+      const signature = shortcutSignature(binding)
+      const owner = owners.get(signature)
+      if (owner) {
+        lastShortcutRegistrationError = `${binding} is already assigned to ${owner}. Each shortcut can trigger only one action.`
+        shortcutRegistrations[action].unavailable.push(binding)
+        continue
+      }
+      owners.set(signature, action)
+    }
   }
 
-  const holdReady = await attemptRegisterHoldShortcut(requestedHoldShortcut)
-  if (!holdReady) {
-    lastShortcutRegistrationError = holdShortcutRegistrationError
-    if (announce) send('toast', { kind: 'shortcut-unavailable', shortcut: requestedHoldShortcut, error: holdShortcutRegistrationError })
-    send('toast', { kind: 'refresh' })
-    return false
+  const orderedActions: ShortcutActionId[] = ['pushToTalk', ...SHORTCUT_ACTION_IDS.filter((action) => action !== 'pushToTalk')]
+  for (const action of orderedActions) {
+    for (const binding of bindings[action]) {
+      if (shortcutRegistrations[action].unavailable.includes(binding)) continue
+      const modifierOnly = binding.split('+').filter(Boolean).every((part) => ['Control', 'Alt', 'Shift', 'Super', 'CommandOrControl'].includes(part))
+      const needsNative = action === 'pushToTalk' || isMouseGesture(binding) || modifierOnly || isWindowsSpaceShortcut(binding)
+      let ready = false
+      if (!needsNative) {
+        try {
+          ready = globalShortcut.register(binding, () => triggerShortcutAction(action))
+        } catch {
+          ready = false
+        }
+      }
+      if (!ready && process.platform === 'win32') {
+        ready = await startWindowsActionHook(action, binding, action === 'pushToTalk' ? 'hold' : 'trigger', () => triggerShortcutAction(action))
+      }
+      if (ready) shortcutRegistrations[action].registered.push(binding)
+      else {
+        shortcutRegistrations[action].unavailable.push(binding)
+        lastShortcutRegistrationError ||= `${binding} is unavailable or already claimed by another application.`
+      }
+    }
   }
 
-  const toggleReady = await attemptRegisterToggleShortcut(
-    requestedToggleShortcut,
-    process.platform === 'win32' && shortcutIsStrictSubset(requestedHoldShortcut, requestedToggleShortcut),
-  )
-  if (!toggleReady) {
-    lastShortcutRegistrationError = shortcutRegistrationError
-    unregisterShortcuts()
-    if (announce) send('toast', { kind: 'shortcut-unavailable', shortcut: requestedToggleShortcut, error: shortcutRegistrationError })
-    send('toast', { kind: 'refresh' })
-    return false
-  }
-
-  if (announce) send('toast', { kind: 'shortcuts-ready' })
+  registeredHoldShortcut = shortcutRegistrations.pushToTalk.registered[0] ?? ''
+  holdShortcutRegistered = Boolean(registeredHoldShortcut)
+  registeredShortcut = shortcutRegistrations.handsFree.registered[0] ?? ''
+  shortcutRegistered = Boolean(registeredShortcut)
+  const allReady = SHORTCUT_ACTION_IDS.every((action) => shortcutRegistrations[action].unavailable.length === 0)
+  if (announce && allReady) send('toast', { kind: 'shortcuts-ready' })
+  if (announce && !allReady) send('toast', { kind: 'shortcut-unavailable', error: lastShortcutRegistrationError })
   // Settings must refresh after the native registration attempt so the
   // two displayed chords and their active registrations cannot drift apart.
   send('toast', { kind: 'refresh' })
-  console.info(`[shortcut] toggle=${registeredShortcut || 'none'} hold=${registeredHoldShortcut || 'none'} registered=true`)
-  return true
+  console.info(`[shortcut] registered=${SHORTCUT_ACTION_IDS.map((action) => `${action}:${shortcutRegistrations[action].registered.join(',') || 'none'}`).join(' ')}`)
+  return allReady
 }
 
 const setShortcutRecording = async (recording: boolean): Promise<CommandResult> => {
@@ -1207,14 +1575,20 @@ const setShortcutRecording = async (recording: boolean): Promise<CommandResult> 
       holdShortcut: settings.holdShortcut,
       toggleShortcut: settings.toggleShortcut,
     }
+    shortcutBindingsBeforeRecording = normalizeShortcutBindings(settings.shortcutBindings, settings)
     shortcutRecording = true
     unregisterShortcuts()
-    const nativeRecorderReady = await startWindowsShortcutRecorder()
-    if (process.platform === 'win32' && !nativeRecorderReady) {
+    const [nativeRecorderReady, mouseRecorderReady] = await Promise.all([
+      startWindowsShortcutRecorder(),
+      startWindowsMouseShortcutRecorder(),
+    ])
+    if (process.platform === 'win32' && (!nativeRecorderReady || !mouseRecorderReady)) {
       shortcutRecording = false
       const previous = shortcutSettingsBeforeRecording
+      const previousBindings = shortcutBindingsBeforeRecording
       shortcutSettingsBeforeRecording = null
-      if (previous) await registerShortcuts(previous, false)
+      shortcutBindingsBeforeRecording = null
+      if (previous && previousBindings) await registerShortcuts({ ...previous, shortcutBindings: previousBindings }, false)
       return result(false, undefined, 'FlowerWhisp could not start the Windows shortcut recorder. The existing shortcuts remain active.')
     }
     return result(true, 'Shortcut recording is ready.')
@@ -1225,18 +1599,22 @@ const setShortcutRecording = async (recording: boolean): Promise<CommandResult> 
   const desired = (await getSnapshot()).settings
   if (await registerShortcuts(desired)) {
     shortcutSettingsBeforeRecording = null
-    return result(true, 'Push-to-talk and hands-free shortcuts are active.')
+    shortcutBindingsBeforeRecording = null
+    return result(true, 'Shortcut actions are active.')
   }
 
   const rejectedError = lastShortcutRegistrationError || 'The new shortcut could not be activated.'
   const previous = shortcutSettingsBeforeRecording
+  const previousBindings = shortcutBindingsBeforeRecording
   shortcutSettingsBeforeRecording = null
-  if (previous) {
+  shortcutBindingsBeforeRecording = null
+  if (previous && previousBindings) {
     await store.update((snapshot) => {
       snapshot.settings.holdShortcut = previous.holdShortcut
       snapshot.settings.toggleShortcut = previous.toggleShortcut
+      snapshot.settings.shortcutBindings = previousBindings
     })
-    await registerShortcuts(previous, false)
+    await registerShortcuts({ ...previous, shortcutBindings: previousBindings }, false)
     send('toast', { kind: 'refresh' })
   }
   return result(false, undefined, `${rejectedError} The previous shortcuts were restored.`)
@@ -1323,6 +1701,7 @@ const handleAudio = async (payload: { sessionId: string; dataUrl: string; mimeTy
     const settings = (await getSnapshot()).settings
     advance('processing', { message: settings.cleanupLevel === 'none' ? 'Applying dictionary corrections…' : 'Applying the selected cleanup…' })
     const processed = await pipeline.run({ audio: { bytes, mimeType: payload.mimeType, durationMs: payload.durationMs }, settings })
+    lastTranscriptText = processed.finalText
     try {
       await persistRecording(processed.record.id, bytes, payload.mimeType, settings.retention)
     } catch (error) {
@@ -1427,9 +1806,30 @@ const applySystemSettings = (settings: PublicSettings): void => {
   })
 }
 
+const validateShortcutBindings = (value: unknown): value is ShortcutBindings => {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Partial<Record<ShortcutActionId, unknown>>
+  return SHORTCUT_ACTION_IDS.every((action) => Array.isArray(candidate[action])
+    && candidate[action].every((binding) => isValidShortcutForAction(action, binding)))
+}
+
+const shortcutBindingConflict = (bindings: ShortcutBindings): string | null => {
+  const owners = new Map<string, ShortcutActionId>()
+  for (const action of SHORTCUT_ACTION_IDS) {
+    for (const binding of bindings[action]) {
+      const signature = shortcutSignature(binding)
+      const owner = owners.get(signature)
+      if (owner) return `${binding} is already assigned to ${owner}. Remove it there before assigning it to ${action}.`
+      owners.set(signature, action)
+    }
+  }
+  return null
+}
+
 const saveSettings = async (patch: Partial<PublicSettings>): Promise<CommandResult> => {
   if (patch.toggleShortcut !== undefined && !isValidShortcut(patch.toggleShortcut)) return result(false, undefined, 'Use at least one modifier and one final key, for example Control+Super+Space or Control+Shift+Tab.')
   if (patch.holdShortcut !== undefined && !isValidHoldShortcut(patch.holdShortcut)) return result(false, undefined, 'Use one or more modifiers, a modifier plus a final key, or a function key for hold to dictate.')
+  if (patch.shortcutBindings !== undefined && !validateShortcutBindings(patch.shortcutBindings)) return result(false, undefined, 'One of the shortcut action bindings is not supported.')
   if (patch.cleanupPrompts !== undefined) {
     for (const level of ['none', 'light', 'medium'] as const) {
       const prompt = patch.cleanupPrompts[level]
@@ -1441,16 +1841,21 @@ const saveSettings = async (patch: Partial<PublicSettings>): Promise<CommandResu
   const previousShortcuts: DictationShortcutSettings = {
     holdShortcut: previous.settings.holdShortcut,
     toggleShortcut: previous.settings.toggleShortcut,
+    shortcutBindings: normalizeShortcutBindings(previous.settings.shortcutBindings, previous.settings),
   }
+  const requestedBindings = patch.shortcutBindings
+    ? normalizeShortcutBindings(patch.shortcutBindings, previous.settings)
+    : normalizeShortcutBindings(previousShortcuts.shortcutBindings, previous.settings)
+  if (patch.holdShortcut !== undefined) requestedBindings.pushToTalk = [patch.holdShortcut]
+  if (patch.toggleShortcut !== undefined) requestedBindings.handsFree = [patch.toggleShortcut]
   const candidateShortcuts: DictationShortcutSettings = {
     holdShortcut: patch.holdShortcut ?? previousShortcuts.holdShortcut,
     toggleShortcut: patch.toggleShortcut ?? previousShortcuts.toggleShortcut,
+    shortcutBindings: requestedBindings,
   }
-  if (shortcutSignature(candidateShortcuts.holdShortcut) === shortcutSignature(candidateShortcuts.toggleShortcut)) {
-    return result(false, undefined, 'Hold to dictate and toggle dictation must use different combinations.')
-  }
-  const shortcutsChanged = candidateShortcuts.holdShortcut !== previousShortcuts.holdShortcut
-    || candidateShortcuts.toggleShortcut !== previousShortcuts.toggleShortcut
+  const conflict = shortcutBindingConflict(candidateShortcuts.shortcutBindings)
+  if (conflict) return result(false, undefined, conflict)
+  const shortcutsChanged = JSON.stringify(candidateShortcuts.shortcutBindings) !== JSON.stringify(previousShortcuts.shortcutBindings)
   if (shortcutsChanged && !shortcutRecording && !(await registerShortcuts(candidateShortcuts, false))) {
     const registrationError = lastShortcutRegistrationError || 'The new shortcut could not be activated.'
     await registerShortcuts(previousShortcuts, false)
@@ -1459,7 +1864,13 @@ const saveSettings = async (patch: Partial<PublicSettings>): Promise<CommandResu
   let updated: AppSnapshot
   try {
     updated = await store.update((snapshot) => {
-      snapshot.settings = { ...snapshot.settings, ...patch }
+      snapshot.settings = {
+        ...snapshot.settings,
+        ...patch,
+        shortcutBindings: candidateShortcuts.shortcutBindings,
+        holdShortcut: candidateShortcuts.shortcutBindings.pushToTalk.find((binding) => isValidHoldShortcut(binding)) ?? snapshot.settings.holdShortcut,
+        toggleShortcut: candidateShortcuts.shortcutBindings.handsFree.find((binding) => isValidShortcut(binding)) ?? snapshot.settings.toggleShortcut,
+      }
     })
   } catch {
     if (shortcutsChanged && !shortcutRecording) await registerShortcuts(previousShortcuts, false)
@@ -1745,6 +2156,34 @@ const registerIpc = (): void => {
     await store.update((snapshot) => (snapshot.scratchpad = value))
     return result(true, 'Scratchpad saved.')
   })
+  ipcMain.handle('command:run', async (event, sourceText: unknown, instructions: unknown) => {
+    if (!isTrustedSender(event) || !validateText(sourceText, 20_000) || !validateText(instructions, 4_000) || !sourceText.trim() || !instructions.trim()) {
+      return { ...result(false, undefined, 'Select text and add a command first.'), text: undefined }
+    }
+    try {
+      const settings = (await getSnapshot()).settings
+      const text = await pipeline.transformText(sourceText.trim(), instructions.trim(), settings)
+      lastTransformChange = { sourceText: sourceText.trim(), text, instructions: instructions.trim() }
+      return { ...result(true, 'Transform ready.'), text }
+    } catch (error) {
+      return { ...result(false, undefined, error instanceof Error ? error.message : 'Command Mode failed.'), text: undefined }
+    }
+  })
+  ipcMain.handle('command:apply', async (event, text: unknown) => {
+    if (!isTrustedSender(event) || !validateText(text, 20_000) || !text.trim()) return result(false, undefined, 'There is no Transform result to apply.')
+    const insertion = insertAtTarget(text, pendingCommandTarget)
+    if (insertion.outcome === 'inserted') pendingCommandTarget = null
+    return result(insertion.outcome === 'inserted', insertion.message, insertion.outcome === 'inserted' ? undefined : insertion.message)
+  })
+  ipcMain.handle('command:perplexity', async (event, sourceText: unknown, question: unknown) => {
+    if (!isTrustedSender(event) || !validateText(sourceText, 8_000) || !validateText(question, 2_000) || !sourceText.trim() || !question.trim()) {
+      return result(false, undefined, 'Select text and add a question first.')
+    }
+    const query = `${question.trim()}\n\nSelected text:\n${sourceText.trim()}`
+    const url = `https://www.perplexity.ai/search?q=${encodeURIComponent(query)}`
+    await shell.openExternal(url)
+    return result(true, 'Opened Perplexity with the selected text.')
+  })
 }
 
 const createTray = (): void => {
@@ -1809,6 +2248,7 @@ if (!gotLock) {
     stopElapsedTicker()
     stopWindowsShortcutHook()
     stopWindowsHoldShortcutHook()
+    stopWindowsActionHooks()
     stopWindowsShortcutRecorder()
     globalShortcut.unregisterAll()
     tray?.destroy()
