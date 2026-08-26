@@ -94,6 +94,8 @@ export class GroqProvider {
       styleId: settings.defaultStyle,
       styleRules,
     })
+    const startedAt = Date.now()
+    console.info(`[cleanup] request provider=groq endpoint=chat/completions model=${settings.llmModel} level=${settings.cleanupLevel}`)
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -111,7 +113,7 @@ export class GroqProvider {
       throw new ProviderError('Text cleanup could not reach Groq. The safe transcript is still available.', 'network')
     })
 
-    if (!response.ok) throw new ProviderError('Groq rejected the cleanup request. The safe transcript is still available.', 'provider')
+    if (!response.ok) throw new ProviderError(`Groq rejected the cleanup request (HTTP ${response.status}). The safe transcript is still available.`, 'provider')
     const payload = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> }
     const content = payload.choices?.[0]?.message?.content
     if (typeof content !== 'string') throw new ProviderError('Groq returned an invalid cleanup response.', 'invalid-output')
@@ -121,7 +123,9 @@ export class GroqProvider {
       if (!['ok', 'unchanged'].includes(parsed.status ?? '') || typeof parsed.text !== 'string' || !parsed.text.trim()) {
         throw new Error('invalid cleanup status')
       }
-      return { text: parsed.text.trim(), changed: parsed.text.trim() !== text.trim(), model: settings.llmModel }
+      const cleaned = parsed.text.trim()
+      console.info(`[cleanup] completed provider=groq model=${settings.llmModel} changed=${cleaned !== text.trim()} durationMs=${Date.now() - startedAt}`)
+      return { text: cleaned, changed: cleaned !== text.trim(), model: settings.llmModel }
     } catch {
       throw new ProviderError('The cleanup response failed validation. The safe transcript is still available.', 'invalid-output')
     }

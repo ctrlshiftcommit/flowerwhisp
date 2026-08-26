@@ -1,4 +1,4 @@
-import type { DictationRecord, PublicSettings, ProviderId } from '../../shared/ipc'
+import type { CleanupStatus, DictationRecord, PublicSettings, ProviderId } from '../../shared/ipc'
 import { applyDictionary, countWords } from '../domain'
 import { GroqProvider, LocalTranscriptionProvider, ProviderError, type AudioInput } from './providers'
 import { JsonStateStore } from './store'
@@ -17,6 +17,8 @@ export interface PipelineResult {
   provider: ProviderId
   dictionaryFixCount: number
   aiFixCount: number
+  cleanupStatus: CleanupStatus
+  cleanupError?: string
 }
 
 const changedWordCount = (before: string, after: string): number => {
@@ -58,8 +60,10 @@ export class DictationPipeline {
     const rawText = transcription.text
     const cleanedText = dictionary.text
     let finalText = cleanedText
+    let cleanupStatus: CleanupStatus = 'disabled'
+    let cleanupError: string | undefined
 
-    if (request.settings.cleanupLevel !== 'none' && request.settings.llmProvider === 'groq') {
+    if (request.settings.cleanupLevel !== 'none') {
       const style = snapshot.styles.find((candidate) => candidate.id === request.settings.defaultStyle)
       try {
         const polished = await this.groq.cleanup(
@@ -68,12 +72,14 @@ export class DictationPipeline {
           style?.rules ?? [],
         )
         finalText = polished.text
+        cleanupStatus = polished.changed ? 'applied' : 'unchanged'
       } catch (error) {
-        if (error instanceof ProviderError && error.code === 'missing-key') {
-          throw error
-        }
-        // The deterministic transcript is still safe. The caller can surface that cleanup was skipped.
+        // Cleanup is optional. Preserve the deterministic transcript, but do
+        // not pretend that a text-LLM request succeeded when it did not.
         finalText = cleanedText
+        cleanupStatus = 'failed'
+        cleanupError = error instanceof Error ? error.message : 'Text cleanup failed.'
+        console.warn(`[cleanup] failed level=${request.settings.cleanupLevel} model=${request.settings.llmModel}: ${cleanupError}`)
       }
     }
 
@@ -92,7 +98,7 @@ export class DictationPipeline {
       category: 'Other',
       transcriptionProvider: provider,
       transcriptionModel: request.settings.transcriptionModel,
-      llmProvider: request.settings.llmProvider,
+      llmProvider: request.settings.cleanupLevel === 'none' ? 'none' : 'groq',
       llmModel: request.settings.llmModel,
       cleanupLevel: request.settings.cleanupLevel,
       style: request.settings.defaultStyle,
@@ -101,6 +107,8 @@ export class DictationPipeline {
       insertionOutcome: 'not-attempted',
       retention,
       audioAvailable: false,
+      cleanupStatus,
+      cleanupError,
     }
 
     await this.store.update((current) => {
@@ -124,6 +132,8 @@ export class DictationPipeline {
       provider,
       dictionaryFixCount: dictionary.replacements,
       aiFixCount: changedWordCount(cleanedText, finalText),
+      cleanupStatus,
+      cleanupError,
     }
   }
 

@@ -53,9 +53,9 @@ describe('FlowerWhisp prompt contracts', () => {
   })
 
   it.each([
-    ['none', 'Make no language changes'],
-    ['light', 'only unambiguous mechanical corrections'],
-    ['medium', 'locally clear grammar and sentence-flow corrections'],
+    ['none', 'Do not edit the source text'],
+    ['light', 'clean written text with minimal intervention'],
+    ['medium', 'fluent, natural written language'],
   ] as const)('gives cleanup level %s a deterministic contract', (level, instruction) => {
     const prompt = buildCleanupSystemPrompt({ cleanupLevel: level })
 
@@ -100,6 +100,14 @@ describe('FlowerWhisp prompt contracts', () => {
     expect(prompt).toContain('Carry out only the requested transform')
     expect(prompt).toContain('Keep every supported fact')
     expect(prompt).toContain('Never return meta-commentary')
+    expect(prompt).toContain('{"status":"ok"|"unchanged","text":"the complete resulting text"}')
+  })
+
+  it('matches the JSON contract required by the cleanup response parser', () => {
+    const prompt = buildCleanupSystemPrompt({ cleanupLevel: 'light' })
+    expect(prompt).toContain('Return exactly one valid JSON object')
+    expect(prompt).toContain('Use status "unchanged" only when text is identical')
+    expect(prompt).toContain('The text field must never be empty')
   })
 
   it('accepts current main-process context fields and spoken dictionary entries', () => {

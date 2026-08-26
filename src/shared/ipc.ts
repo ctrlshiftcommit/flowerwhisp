@@ -15,6 +15,8 @@ export type DictationMode = 'toggle' | 'hold'
 export type { ShortcutActionId, ShortcutBindings } from './shortcuts'
 import type { ShortcutActionId, ShortcutBindings } from './shortcuts'
 export type RetentionMode = 'forever' | '24h' | 'never'
+export type PillPosition = 'left' | 'center' | 'right'
+export type CleanupStatus = 'disabled' | 'applied' | 'unchanged' | 'failed'
 export type DictationPhase =
   | 'idle'
   | 'starting'
@@ -45,6 +47,7 @@ export interface PublicSettings {
   localWorkingDirectory: string
   launchAtLogin: boolean
   showPill: boolean
+  pillPosition: PillPosition
   showInDock: boolean
   playSounds: boolean
   muteMusicWhileDictating: boolean
@@ -77,6 +80,22 @@ export interface DictationRecord {
   /** Main-process-only filename for the retained recording. Never a user path. */
   audioFileName?: string
   audioMimeType?: string
+  /** Whether the optional text-LLM cleanup actually ran for this transcript. */
+  cleanupStatus?: CleanupStatus
+  /** Safe, user-facing reason when cleanup was attempted but could not be applied. */
+  cleanupError?: string
+}
+
+export interface RecoveryRecording {
+  id: string
+  createdAt: string
+  durationMs: number
+  mimeType: string
+  status: 'pending' | 'failed'
+  retryCount: number
+  error?: string
+  /** Main-process-only filename. Never expose this field through bootstrap. */
+  audioFileName?: string
 }
 
 export interface DictionaryEntry {
@@ -144,6 +163,7 @@ export interface BootstrapPayload {
   snippets: Snippet[]
   styles: StyleProfile[]
   transforms: TransformProfile[]
+  recoveries: Array<Omit<RecoveryRecording, 'audioFileName'>>
   usage: UsageDay[]
   scratchpad: string
   hasGroqKey: boolean
@@ -154,6 +174,10 @@ export interface BootstrapPayload {
   shortcutRegistrations: Record<ShortcutActionId, {
     registered: string[]
     unavailable: string[]
+  }>
+  transformShortcutRegistrations: Record<string, {
+    registered: boolean
+    error?: string
   }>
   capabilities: {
     microphone: boolean
@@ -234,6 +258,9 @@ export interface FlowerWhispApi {
     reportLevel(sessionId: string, level: number): void
     reportError(sessionId: string, message: string): void
   }
+  pill: {
+    setHovered(hovered: boolean): void
+  }
   settings: {
     save(patch: Partial<PublicSettings>): Promise<CommandResult>
     setShortcutRecording(recording: boolean): Promise<CommandResult>
@@ -248,6 +275,10 @@ export interface FlowerWhispApi {
     undo(id: string): Promise<CommandResult>
     retry(id: string): Promise<CommandResult>
     extract(id: string): Promise<CommandResult>
+  }
+  recovery: {
+    retry(id: string): Promise<CommandResult>
+    discard(id: string): Promise<CommandResult>
   }
   dictionary: {
     save(entry: Omit<DictionaryEntry, 'id' | 'createdAt'> & { id?: string }): Promise<CommandResult>

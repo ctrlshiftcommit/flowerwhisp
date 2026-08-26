@@ -29,6 +29,9 @@ const api: FlowerWhispApi = {
     reportLevel: (sessionId, level) => ipcRenderer.send('audio:level', { sessionId, level }),
     reportError: (sessionId, message) => ipcRenderer.send('audio:error', { sessionId, message }),
   },
+  pill: {
+    setHovered: (hovered) => ipcRenderer.send('pill:hovered', hovered),
+  },
   settings: {
     save: (patch: Partial<PublicSettings>) => ipcRenderer.invoke('settings:save', patch),
     setShortcutRecording: (recording: boolean) => ipcRenderer.invoke('settings:shortcut-recording', recording),
@@ -43,6 +46,10 @@ const api: FlowerWhispApi = {
     undo: (id) => ipcRenderer.invoke('history:undo', id),
     retry: (id) => ipcRenderer.invoke('history:retry', id),
     extract: (id) => ipcRenderer.invoke('history:extract', id),
+  },
+  recovery: {
+    retry: (id) => ipcRenderer.invoke('recovery:retry', id),
+    discard: (id) => ipcRenderer.invoke('recovery:discard', id),
   },
   dictionary: {
     save: (entry) => ipcRenderer.invoke('dictionary:save', entry),

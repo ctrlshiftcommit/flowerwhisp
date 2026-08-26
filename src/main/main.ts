@@ -30,11 +30,12 @@ import type {
   DictationMode,
   DictationPhase,
   OverlayState,
+  PageId,
   PublicSettings,
   ShortcutActionId,
   ShortcutBindings,
 } from '../shared/ipc'
-import type { DictationRecord, DictionaryEntry, Snippet, TransformProfile } from '../shared/ipc'
+import type { DictationRecord, DictionaryEntry, RecoveryRecording, Snippet, TransformProfile } from '../shared/ipc'
 import {
   isDoubleTapMouseShortcut,
   isMouseGesture,
@@ -109,9 +110,12 @@ let holdShortcutRegistrationError = 'The hold shortcut could not be installed.'
 let lastShortcutRegistrationError = ''
 let shortcutSettingsBeforeRecording: Pick<PublicSettings, 'holdShortcut' | 'toggleShortcut'> | null = null
 let shortcutBindingsBeforeRecording: ShortcutBindings | null = null
+let shortcutTransformsBeforeRecording: TransformProfile[] | null = null
 let shortcutInitialization: Promise<boolean> | null = null
 let allowQuit = false
 let pillEnabled = true
+let pillPosition: PublicSettings['pillPosition'] = 'center'
+let pillHovered = false
 let recordingsDirectory = ''
 const actionHookProcesses = new Map<string, ShortcutHookProcess>()
 let shortcutRecordMouseHookProcess: ShortcutHookProcess | null = null
@@ -124,6 +128,7 @@ const emptyShortcutRegistrations = (): BootstrapPayload['shortcutRegistrations']
 ) as unknown as BootstrapPayload['shortcutRegistrations']
 
 let shortcutRegistrations = emptyShortcutRegistrations()
+let transformShortcutRegistrations: BootstrapPayload['transformShortcutRegistrations'] = {}
 
 type ActiveSession = {
   id: string
@@ -162,6 +167,65 @@ const makeTrayImage = () => {
 const audioExtension = (mimeType: string): string => mimeType.includes('ogg') ? 'ogg' : 'webm'
 
 const audioPathFor = (fileName: string): string => path.join(recordingsDirectory, path.basename(fileName))
+
+const createRecoveryRecording = async (sessionId: string, bytes: Uint8Array, mimeType: string, durationMs: number): Promise<RecoveryRecording> => {
+  const id = `recovery-${Date.now()}-${sessionId.slice(0, 8)}`
+  const audioFileName = `${id}.${audioExtension(mimeType)}`
+  await mkdir(recordingsDirectory, { recursive: true })
+  // Commit the audio before transcription begins. A provider timeout, renderer
+  // close, or process exit after this point can no longer erase the recording.
+  await writeFile(audioPathFor(audioFileName), bytes)
+  const recovery: RecoveryRecording = {
+    id,
+    createdAt: new Date().toISOString(),
+    durationMs,
+    mimeType,
+    status: 'pending',
+    retryCount: 0,
+    audioFileName,
+  }
+  await store.update((snapshot) => {
+    snapshot.recoveries = [recovery, ...snapshot.recoveries.filter((candidate) => candidate.id !== id)].slice(0, 25)
+  })
+  notifyBootstrapChanged()
+  return recovery
+}
+
+const markRecoveryFailed = async (id: string, error: string): Promise<void> => {
+  await store.update((snapshot) => {
+    const recovery = snapshot.recoveries.find((candidate) => candidate.id === id)
+    if (!recovery) return
+    recovery.status = 'failed'
+    recovery.error = error
+  })
+  notifyBootstrapChanged()
+}
+
+const discardRecoveryRecording = async (id: string): Promise<void> => {
+  const snapshot = await getSnapshot()
+  const recovery = snapshot.recoveries.find((candidate) => candidate.id === id)
+  await store.update((current) => {
+    current.recoveries = current.recoveries.filter((candidate) => candidate.id !== id)
+  })
+  if (recovery?.audioFileName) await unlink(audioPathFor(recovery.audioFileName)).catch(() => undefined)
+  notifyBootstrapChanged()
+}
+
+const completeRecoveryRecording = async (recovery: RecoveryRecording, recordId: string, retention: PublicSettings['retention']): Promise<void> => {
+  await store.update((snapshot) => {
+    snapshot.recoveries = snapshot.recoveries.filter((candidate) => candidate.id !== recovery.id)
+    if (retention === 'never' || !recovery.audioFileName) return
+    const record = snapshot.records.find((candidate) => candidate.id === recordId)
+    if (!record) return
+    record.audioAvailable = true
+    record.audioFileName = recovery.audioFileName
+    record.audioMimeType = recovery.mimeType
+  })
+  if (retention === 'never' && recovery.audioFileName) {
+    await unlink(audioPathFor(recovery.audioFileName)).catch(() => undefined)
+  }
+  notifyBootstrapChanged()
+}
 
 const persistRecording = async (recordId: string, bytes: Uint8Array, mimeType: string, retention: PublicSettings['retention']): Promise<void> => {
   if (retention === 'never') return
@@ -219,6 +283,7 @@ const publishOverlay = (patch: Partial<OverlayState>): void => {
   send('dictation:state', overlayState)
   send('overlay:state', overlayState)
   if (tray) tray.setToolTip(`FlowerWhisp — ${overlayState.phase === 'idle' ? 'Ready' : overlayState.phase}`)
+  syncOverlayGeometry()
 }
 
 const advance = (phase: DictationPhase, patch: Partial<OverlayState> = {}): void => {
@@ -226,15 +291,31 @@ const advance = (phase: DictationPhase, patch: Partial<OverlayState> = {}): void
   publishOverlay({ phase, ...patch })
 }
 
-const showOverlay = (): void => {
+const overlaySize = (): { width: number; height: number } => {
+  if (['idle', 'success', 'cancelled'].includes(overlayState.phase)) return pillHovered ? { width: 116, height: 32 } : { width: 46, height: 22 }
+  if (overlayState.phase === 'recording') return { width: 104, height: 38 }
+  if (overlayState.phase === 'error') return { width: 34, height: 34 }
+  if (overlayState.phase === 'ready') return { width: 70, height: 36 }
+  return { width: 68, height: 36 }
+}
+
+const syncOverlayGeometry = (): void => {
   if (!overlayWindow || overlayWindow.isDestroyed()) return
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
   const bounds = display.workArea
-  const { width, height } = overlayWindow.getBounds()
-  overlayWindow.setPosition(
-    Math.round(bounds.x + (bounds.width - width) / 2),
-    Math.max(bounds.y + 12, bounds.y + bounds.height - height - 12),
-  )
+  const { width, height } = overlaySize()
+  const x = pillPosition === 'left'
+    ? bounds.x + 16
+    : pillPosition === 'right'
+      ? bounds.x + bounds.width - width - 16
+      : Math.round(bounds.x + (bounds.width - width) / 2)
+  const y = Math.max(bounds.y + 12, bounds.y + bounds.height - height - 12)
+  overlayWindow.setBounds({ x, y, width, height }, false)
+}
+
+const showOverlay = (): void => {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return
+  syncOverlayGeometry()
   overlayWindow.setAlwaysOnTop(true, 'screen-saver')
   overlayWindow.showInactive()
   overlayWindow.moveTop()
@@ -288,6 +369,7 @@ const createWindows = (): void => {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
     },
   })
   mainWindow.on('close', (event) => {
@@ -315,12 +397,13 @@ const createWindows = (): void => {
       metaKey: input.meta,
     })
   })
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindow?.webContents.send('dictation:state', overlayState)
+  })
 
   overlayWindow = new BrowserWindow({
-    width: 150,
-    height: 64,
-    minWidth: 150,
-    minHeight: 64,
+    width: 46,
+    height: 22,
     frame: false,
     transparent: true,
     resizable: false,
@@ -336,6 +419,7 @@ const createWindows = (): void => {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
     },
   })
   overlayWindow.on('closed', () => {
@@ -347,6 +431,10 @@ const createWindows = (): void => {
   // whether that mount is a nearly invisible marker or an active control. Wait
   // for the native surface before showing a transparent always-on-top window.
   overlayWindow.once('ready-to-show', () => {
+    if (pillEnabled) showOverlay()
+  })
+  overlayWindow.webContents.on('did-finish-load', () => {
+    overlayWindow?.webContents.send('overlay:state', overlayState)
     if (pillEnabled) showOverlay()
   })
 
@@ -374,6 +462,7 @@ const buildBootstrap = async (): Promise<BootstrapPayload> => {
     snippets: snapshot.snippets,
     styles: snapshot.styles,
     transforms: snapshot.transforms,
+    recoveries: snapshot.recoveries.map(({ audioFileName: _audioFileName, ...recovery }) => recovery),
     usage: snapshot.usage,
     scratchpad: snapshot.scratchpad,
     hasGroqKey: await secrets.hasGroqKey(),
@@ -382,6 +471,7 @@ const buildBootstrap = async (): Promise<BootstrapPayload> => {
     shortcutRegistered,
     registeredShortcut,
     shortcutRegistrations,
+    transformShortcutRegistrations,
     capabilities: {
       microphone: true,
       cloudTranscription: true,
@@ -894,7 +984,7 @@ const stopWindowsActionHooks = (): void => {
 }
 
 const startWindowsActionHook = (
-  action: ShortcutActionId,
+  action: string,
   binding: string,
   mode: 'trigger' | 'hold',
   onTrigger: () => void,
@@ -955,13 +1045,18 @@ const startWindowsActionHook = (
     if (!ready) fail()
     if (actionHookProcesses.get(key) === child) {
       actionHookProcesses.delete(key)
-      const registration = shortcutRegistrations[action]
-      registration.registered = registration.registered.filter((candidate) => candidate !== binding)
-      if (!registration.unavailable.includes(binding)) registration.unavailable.push(binding)
+      if ((SHORTCUT_ACTION_IDS as readonly string[]).includes(action)) {
+        const registration = shortcutRegistrations[action as ShortcutActionId]
+        registration.registered = registration.registered.filter((candidate) => candidate !== binding)
+        if (!registration.unavailable.includes(binding)) registration.unavailable.push(binding)
+      } else if (action.startsWith('transform:')) {
+        const id = action.slice('transform:'.length)
+        transformShortcutRegistrations[id] = { registered: false, error: `${binding} stopped listening and is no longer active.` }
+      }
       send('toast', { kind: 'shortcut-unavailable', shortcut: binding, error: `${binding} stopped listening and is no longer active.` })
     }
   })
-  timeout = setTimeout(fail, 3_000)
+  timeout = setTimeout(fail, 8_000)
   return new Promise((resolve) => {
     const check = (): void => {
       if (ready) resolve(true)
@@ -1013,7 +1108,7 @@ const startWindowsMouseShortcutRecorder = (): Promise<boolean> => {
   child.stderr.on('data', (chunk: Buffer | string) => console.error(`[shortcut-recorder:mouse] ${chunk.toString().trim()}`))
   child.once('error', fail)
   child.once('close', () => { if (!ready) fail(); if (shortcutRecordMouseHookProcess === child) shortcutRecordMouseHookProcess = null })
-  timeout = setTimeout(fail, 3_000)
+  timeout = setTimeout(fail, 8_000)
   return new Promise((resolve) => {
     const check = (): void => {
       if (ready) resolve(true)
@@ -1090,7 +1185,7 @@ const startWindowsShortcutRecorder = (): Promise<boolean> => {
     if (!ready) fail()
     if (shortcutRecordHookProcess === child) shortcutRecordHookProcess = null
   })
-  timeout = setTimeout(() => fail(), 3_000)
+  timeout = setTimeout(() => fail(), 8_000)
   return new Promise((resolve) => {
     const check = (): void => {
       if (ready) resolve(true)
@@ -1164,7 +1259,7 @@ const startWindowsShortcutHook = (shortcut: string): Promise<boolean> => {
       }
     }
   })
-  timeout = setTimeout(() => fail(), 3_000)
+  timeout = setTimeout(() => fail(), 8_000)
   return new Promise((resolve) => {
     const check = (): void => {
       if (ready) resolve(true)
@@ -1241,7 +1336,7 @@ const startWindowsHoldShortcutHook = (shortcut: string): Promise<boolean> => {
       }
     }
   })
-  timeout = setTimeout(() => fail(), 3_000)
+  timeout = setTimeout(() => fail(), 8_000)
   return new Promise((resolve) => {
     const check = (): void => {
       if (ready) resolve(true)
@@ -1340,7 +1435,7 @@ const shortcutHandler = (): void => {
   if (activeSession.phase === 'starting' || activeSession.phase === 'recording') void stopSession()
 }
 
-const showMainPage = (page: BootstrapPayload['settings'] extends never ? never : 'dictation' | 'transforms' | 'scratchpad' | 'settings'): void => {
+const showMainPage = (page: PageId): void => {
   if (!mainWindow || mainWindow.isDestroyed()) return
   if (mainWindow.isMinimized()) mainWindow.restore()
   mainWindow.show()
@@ -1373,6 +1468,62 @@ const openCommandMode = async (): Promise<void> => {
     sourceText,
     message: sourceText ? undefined : 'Select text in another app before opening Command Mode.',
   })
+}
+
+const captureSelectedText = async (): Promise<{ target: InsertionTarget | null; sourceText: string }> => {
+  const target = captureExternalInsertionTarget()
+  const previousClipboard = {
+    text: clipboard.readText(),
+    html: clipboard.readHTML(),
+    rtf: clipboard.readRTF(),
+    image: clipboard.readImage(),
+  }
+  clipboard.clear()
+  const copySent = copySelectionAtTarget(target)
+  if (copySent) await new Promise((resolve) => setTimeout(resolve, 180))
+  const sourceText = copySent ? clipboard.readText().trim() : ''
+  clipboard.write(previousClipboard)
+  return { target, sourceText }
+}
+
+const triggerTransformShortcut = (transformId: string, afterRelease = false): void => {
+  if (shortcutRecording) return
+  if (!afterRelease) {
+    setTimeout(() => triggerTransformShortcut(transformId, true), 160)
+    return
+  }
+  void (async () => {
+    if (activeSession) {
+      send('toast', { kind: 'action-error', error: 'Finish or cancel dictation before applying a Transform.' })
+      return
+    }
+    const snapshot = await getSnapshot()
+    const transform = snapshot.transforms.find((candidate) => candidate.id === transformId && candidate.enabled)
+    if (!transform) {
+      send('toast', { kind: 'action-error', error: 'That Transform is disabled or no longer exists.' })
+      return
+    }
+    const { target, sourceText } = await captureSelectedText()
+    if (!target || !sourceText) {
+      send('toast', { kind: 'action-error', error: `Select text in another app before running ${transform.name}.` })
+      return
+    }
+    publishOverlay({ ...defaultOverlay(), phase: 'processing', message: `Applying ${transform.name}…` })
+    if (pillEnabled) showOverlay()
+    try {
+      const text = await pipeline.transformText(sourceText, transform.instructions, snapshot.settings)
+      lastTransformChange = { sourceText, text, instructions: transform.instructions }
+      const insertion = insertAtTarget(text, target)
+      publishOverlay({ ...defaultOverlay(), phase: insertion.outcome === 'inserted' ? 'success' : 'error', message: insertion.message, error: insertion.outcome === 'inserted' ? null : insertion.message })
+      send('toast', { kind: insertion.outcome === 'inserted' ? 'action-ready' : 'action-error', error: insertion.message })
+      hideOverlay(insertion.outcome === 'inserted' ? 900 : 1800)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : `${transform.name} failed.`
+      publishOverlay({ ...defaultOverlay(), phase: 'error', message: `${transform.name} failed.`, error: message })
+      send('toast', { kind: 'action-error', error: message })
+      hideOverlay(1800)
+    }
+  })()
 }
 
 const triggerShortcutAction = (action: ShortcutActionId, afterRelease = false): void => {
@@ -1461,6 +1612,7 @@ const unregisterShortcuts = (): void => {
   registeredHoldShortcut = ''
   holdShortcutRegistered = false
   shortcutRegistrations = emptyShortcutRegistrations()
+  transformShortcutRegistrations = {}
 }
 
 const attemptRegisterToggleShortcut = async (shortcut: string, preferWindowsHook = false): Promise<boolean> => {
@@ -1510,11 +1662,13 @@ const attemptRegisterHoldShortcut = async (shortcut: string): Promise<boolean> =
 
 const registerShortcuts = async (requested?: DictationShortcutSettings, announce = true): Promise<boolean> => {
   if (shortcutRecording) return false
-  const snapshot = requested ?? (await getSnapshot()).settings
+  const currentSnapshot = await getSnapshot()
+  const snapshot = requested ?? currentSnapshot.settings
+  const transforms = currentSnapshot.transforms
   const bindings = normalizeShortcutBindings(snapshot.shortcutBindings, snapshot)
   unregisterShortcuts()
   lastShortcutRegistrationError = ''
-  const owners = new Map<string, ShortcutActionId>()
+  const owners = new Map<string, string>()
   for (const action of SHORTCUT_ACTION_IDS) {
     for (const binding of bindings[action]) {
       const signature = shortcutSignature(binding)
@@ -1526,6 +1680,24 @@ const registerShortcuts = async (requested?: DictationShortcutSettings, announce
       }
       owners.set(signature, action)
     }
+  }
+  for (const transform of transforms) {
+    transformShortcutRegistrations[transform.id] = { registered: false }
+    if (!transform.enabled || !transform.shortcut.trim()) continue
+    if (!isValidShortcut(transform.shortcut) || isMouseGesture(transform.shortcut)) {
+      transformShortcutRegistrations[transform.id] = { registered: false, error: 'Use a keyboard shortcut with at least one modifier and one final key.' }
+      lastShortcutRegistrationError ||= `${transform.name} has an invalid shortcut.`
+      continue
+    }
+    const signature = shortcutSignature(transform.shortcut)
+    const owner = owners.get(signature)
+    if (owner) {
+      const error = `${transform.shortcut} is already assigned to ${owner}.`
+      transformShortcutRegistrations[transform.id] = { registered: false, error }
+      lastShortcutRegistrationError ||= error
+      continue
+    }
+    owners.set(signature, `Transform ${transform.name}`)
   }
 
   const orderedActions: ShortcutActionId[] = ['pushToTalk', ...SHORTCUT_ACTION_IDS.filter((action) => action !== 'pushToTalk')]
@@ -1553,17 +1725,35 @@ const registerShortcuts = async (requested?: DictationShortcutSettings, announce
     }
   }
 
+  for (const transform of transforms) {
+    if (!transform.enabled || !transform.shortcut.trim() || transformShortcutRegistrations[transform.id]?.error) continue
+    let ready = false
+    try {
+      ready = globalShortcut.register(transform.shortcut, () => triggerTransformShortcut(transform.id))
+    } catch {
+      ready = false
+    }
+    if (!ready && process.platform === 'win32') {
+      ready = await startWindowsActionHook(`transform:${transform.id}`, transform.shortcut, 'trigger', () => triggerTransformShortcut(transform.id))
+    }
+    transformShortcutRegistrations[transform.id] = ready
+      ? { registered: true }
+      : { registered: false, error: `${transform.shortcut} is unavailable or already claimed by another application.` }
+    if (!ready) lastShortcutRegistrationError ||= transformShortcutRegistrations[transform.id].error ?? ''
+  }
+
   registeredHoldShortcut = shortcutRegistrations.pushToTalk.registered[0] ?? ''
   holdShortcutRegistered = Boolean(registeredHoldShortcut)
   registeredShortcut = shortcutRegistrations.handsFree.registered[0] ?? ''
   shortcutRegistered = Boolean(registeredShortcut)
   const allReady = SHORTCUT_ACTION_IDS.every((action) => shortcutRegistrations[action].unavailable.length === 0)
+    && transforms.every((transform) => !transform.enabled || !transform.shortcut.trim() || transformShortcutRegistrations[transform.id]?.registered)
   if (announce && allReady) send('toast', { kind: 'shortcuts-ready' })
   if (announce && !allReady) send('toast', { kind: 'shortcut-unavailable', error: lastShortcutRegistrationError })
   // Settings must refresh after the native registration attempt so the
   // two displayed chords and their active registrations cannot drift apart.
   send('toast', { kind: 'refresh' })
-  console.info(`[shortcut] registered=${SHORTCUT_ACTION_IDS.map((action) => `${action}:${shortcutRegistrations[action].registered.join(',') || 'none'}`).join(' ')}`)
+  console.info(`[shortcut] registered=${SHORTCUT_ACTION_IDS.map((action) => `${action}:${shortcutRegistrations[action].registered.join(',') || 'none'}`).join(' ')} transforms=${transforms.filter((transform) => transformShortcutRegistrations[transform.id]?.registered).map((transform) => `${transform.name}:${transform.shortcut}`).join(',') || 'none'}`)
   return allReady
 }
 
@@ -1576,6 +1766,7 @@ const setShortcutRecording = async (recording: boolean): Promise<CommandResult> 
       toggleShortcut: settings.toggleShortcut,
     }
     shortcutBindingsBeforeRecording = normalizeShortcutBindings(settings.shortcutBindings, settings)
+    shortcutTransformsBeforeRecording = (await getSnapshot()).transforms.map((transform) => ({ ...transform }))
     shortcutRecording = true
     unregisterShortcuts()
     const [nativeRecorderReady, mouseRecorderReady] = await Promise.all([
@@ -1588,6 +1779,7 @@ const setShortcutRecording = async (recording: boolean): Promise<CommandResult> 
       const previousBindings = shortcutBindingsBeforeRecording
       shortcutSettingsBeforeRecording = null
       shortcutBindingsBeforeRecording = null
+      shortcutTransformsBeforeRecording = null
       if (previous && previousBindings) await registerShortcuts({ ...previous, shortcutBindings: previousBindings }, false)
       return result(false, undefined, 'FlowerWhisp could not start the Windows shortcut recorder. The existing shortcuts remain active.')
     }
@@ -1600,19 +1792,23 @@ const setShortcutRecording = async (recording: boolean): Promise<CommandResult> 
   if (await registerShortcuts(desired)) {
     shortcutSettingsBeforeRecording = null
     shortcutBindingsBeforeRecording = null
+    shortcutTransformsBeforeRecording = null
     return result(true, 'Shortcut actions are active.')
   }
 
   const rejectedError = lastShortcutRegistrationError || 'The new shortcut could not be activated.'
   const previous = shortcutSettingsBeforeRecording
   const previousBindings = shortcutBindingsBeforeRecording
+  const previousTransforms = shortcutTransformsBeforeRecording
   shortcutSettingsBeforeRecording = null
   shortcutBindingsBeforeRecording = null
+  shortcutTransformsBeforeRecording = null
   if (previous && previousBindings) {
     await store.update((snapshot) => {
       snapshot.settings.holdShortcut = previous.holdShortcut
       snapshot.settings.toggleShortcut = previous.toggleShortcut
       snapshot.settings.shortcutBindings = previousBindings
+      if (previousTransforms) snapshot.transforms = previousTransforms
     })
     await registerShortcuts({ ...previous, shortcutBindings: previousBindings }, false)
     send('toast', { kind: 'refresh' })
@@ -1694,20 +1890,25 @@ const handleAudio = async (payload: { sessionId: string; dataUrl: string; mimeTy
   if (!payload.dataUrl.startsWith('data:') || payload.dataUrl.length > 20_000_000) {
     return result(false, undefined, 'The captured audio was invalid or too large.')
   }
-  advance('transcribing', { message: 'Transcribing locally in the selected provider…', elapsedMs: Date.now() - activeSession.startedAt })
   const base64 = payload.dataUrl.split(',')[1] ?? ''
+  let recovery: RecoveryRecording | null = null
   try {
     const bytes = Uint8Array.from(Buffer.from(base64, 'base64'))
+    recovery = await createRecoveryRecording(payload.sessionId, bytes, payload.mimeType, payload.durationMs)
+    advance('transcribing', { message: 'Audio saved. Transcribing with the selected provider…', elapsedMs: Date.now() - activeSession.startedAt })
     const settings = (await getSnapshot()).settings
-    advance('processing', { message: settings.cleanupLevel === 'none' ? 'Applying dictionary corrections…' : 'Applying the selected cleanup…' })
     const processed = await pipeline.run({ audio: { bytes, mimeType: payload.mimeType, durationMs: payload.durationMs }, settings })
+    advance('processing', {
+      message: processed.cleanupStatus === 'applied'
+        ? 'Text cleanup applied.'
+        : processed.cleanupStatus === 'unchanged'
+          ? 'Text cleanup checked; no change was needed.'
+          : processed.cleanupStatus === 'failed'
+            ? 'Cleanup failed; using the safe transcript.'
+            : 'Dictionary corrections applied.',
+    })
     lastTranscriptText = processed.finalText
-    try {
-      await persistRecording(processed.record.id, bytes, payload.mimeType, settings.retention)
-    } catch (error) {
-      // Playback is an enhancement; a disk failure must not discard a valid transcript.
-      console.warn('FlowerWhisp could not retain the source recording for playback', error)
-    }
+    await completeRecoveryRecording(recovery, processed.record.id, settings.retention)
     const startedAt = activeSession.startedAt
     // Capture the active application immediately before insertion. This is
     // the user's requested behavior when they move to another field/app
@@ -1747,6 +1948,7 @@ const handleAudio = async (payload: { sessionId: string; dataUrl: string; mimeTy
   } catch (error) {
     stopElapsedTicker()
     const message = error instanceof Error ? error.message : 'The dictation could not be processed.'
+    if (recovery) await markRecoveryFailed(recovery.id, message).catch((recoveryError) => console.error('Could not mark the recording for recovery', recoveryError))
     advance('error', { message: 'The safe capture was not inserted.', error: message, copyAvailable: false })
     return result(false, undefined, message)
   }
@@ -1837,6 +2039,7 @@ const saveSettings = async (patch: Partial<PublicSettings>): Promise<CommandResu
     }
   }
   if (patch.theme !== undefined && !['light', 'dark', 'system'].includes(patch.theme)) return result(false, undefined, 'Choose light, dark, or system appearance.')
+  if (patch.pillPosition !== undefined && !['left', 'center', 'right'].includes(patch.pillPosition)) return result(false, undefined, 'Choose left, center, or right for the Flow Bar.')
   const previous = await getSnapshot()
   const previousShortcuts: DictationShortcutSettings = {
     holdShortcut: previous.settings.holdShortcut,
@@ -1885,6 +2088,10 @@ const saveSettings = async (patch: Partial<PublicSettings>): Promise<CommandResu
     if (pillEnabled) showOverlay()
     else overlayWindow?.hide()
   }
+  if (patch.pillPosition !== undefined) {
+    pillPosition = patch.pillPosition
+    syncOverlayGeometry()
+  }
   if (patch.launchAtLogin !== undefined || patch.showInDock !== undefined) applySystemSettings(updated.settings)
   notifyBootstrapChanged()
   return result(true, 'Settings saved.')
@@ -1929,14 +2136,39 @@ const saveTransform = async (transform: Omit<TransformProfile, 'builtIn'> & { bu
   if (!validateText(transform.name, 120) || !validateText(transform.instructions, 5_000) || !transform.name.trim() || !transform.instructions.trim()) {
     return result(false, undefined, 'Add a transform name and instructions.')
   }
+  if (transform.shortcut.trim() && (!isValidShortcut(transform.shortcut) || isMouseGesture(transform.shortcut))) {
+    return result(false, undefined, 'Use a keyboard shortcut with at least one modifier and one final key for this Transform.')
+  }
+  const previous = await getSnapshot()
+  if (transform.shortcut.trim()) {
+    const signature = shortcutSignature(transform.shortcut)
+    const actionBindings = normalizeShortcutBindings(previous.settings.shortcutBindings, previous.settings)
+    for (const action of SHORTCUT_ACTION_IDS) {
+      if (actionBindings[action].some((binding) => shortcutSignature(binding) === signature)) {
+        return result(false, undefined, `${transform.shortcut} is already assigned to ${action}. Choose a different Transform shortcut.`)
+      }
+    }
+    const conflictingTransform = previous.transforms.find((candidate) => candidate.id !== transform.id && candidate.enabled && candidate.shortcut.trim() && shortcutSignature(candidate.shortcut) === signature)
+    if (conflictingTransform) return result(false, undefined, `${transform.shortcut} is already assigned to ${conflictingTransform.name}.`)
+  }
+  const previousTransforms = previous.transforms.map((candidate) => ({ ...candidate }))
+  const next: TransformProfile = { ...transform, shortcut: transform.shortcut.trim(), builtIn: Boolean(transform.builtIn) }
   await store.update((snapshot) => {
-    const next: TransformProfile = { ...transform, builtIn: Boolean(transform.builtIn) }
     const index = snapshot.transforms.findIndex((candidate) => candidate.id === next.id)
     if (index >= 0) snapshot.transforms[index] = next
     else snapshot.transforms.unshift(next)
   })
+  if (!shortcutRecording) {
+    await registerShortcuts(undefined, false)
+    if (next.enabled && next.shortcut && !transformShortcutRegistrations[next.id]?.registered) {
+      const error = transformShortcutRegistrations[next.id]?.error || 'The Transform shortcut could not be activated.'
+      await store.update((snapshot) => { snapshot.transforms = previousTransforms })
+      await registerShortcuts(undefined, false)
+      return result(false, undefined, `${error} The previous Transform shortcut was restored.`)
+    }
+  }
   notifyBootstrapChanged()
-  return result(true, 'Transform saved.')
+  return result(true, next.shortcut ? `Transform saved. ${next.shortcut} is active globally.` : 'Transform saved without a shortcut.')
 }
 
 const registerIpc = (): void => {
@@ -2025,6 +2257,11 @@ const registerIpc = (): void => {
     activeSession = null
     publishOverlay({ phase: 'error', message: 'Microphone unavailable.', error: candidate.message, copyAvailable: false })
     hideOverlay(1500)
+  })
+  ipcMain.on('pill:hovered', (event, hovered: unknown) => {
+    if (!isTrustedSender(event) || event.sender.id !== overlayWindow?.webContents.id || typeof hovered !== 'boolean') return
+    pillHovered = hovered
+    syncOverlayGeometry()
   })
   ipcMain.handle('settings:save', (event, patch: unknown) => (isTrustedSender(event) && patch && typeof patch === 'object' ? saveSettings(patch as Partial<PublicSettings>) : result(false, undefined, 'Invalid settings.')))
   ipcMain.handle('settings:shortcut-recording', (event, recording: unknown) => (isTrustedSender(event) && typeof recording === 'boolean' ? setShortcutRecording(recording) : result(false, undefined, 'Invalid shortcut recording state.')))
@@ -2129,6 +2366,38 @@ const registerIpc = (): void => {
       return result(false, undefined, error instanceof Error ? error.message : 'The recording could not be converted to FLAC.')
     }
   })
+  ipcMain.handle('recovery:retry', async (event, id: unknown) => {
+    if (!isTrustedSender(event) || typeof id !== 'string') return result(false, undefined, 'Invalid recovered recording.')
+    const snapshot = await getSnapshot()
+    const recovery = snapshot.recoveries.find((candidate) => candidate.id === id)
+    if (!recovery?.audioFileName) return result(false, undefined, 'The recovered audio is no longer available.')
+    try {
+      await store.update((current) => {
+        const target = current.recoveries.find((candidate) => candidate.id === id)
+        if (!target) return
+        target.status = 'pending'
+        target.retryCount += 1
+        delete target.error
+      })
+      notifyBootstrapChanged()
+      const bytes = await readFile(audioPathFor(recovery.audioFileName))
+      const settings = (await getSnapshot()).settings
+      const processed = await pipeline.run({ audio: { bytes, mimeType: recovery.mimeType, durationMs: recovery.durationMs }, settings })
+      await completeRecoveryRecording(recovery, processed.record.id, settings.retention)
+      clipboard.writeText(processed.finalText)
+      lastTranscriptText = processed.finalText
+      return result(true, processed.cleanupStatus === 'failed' ? 'Transcript recovered and copied. Text cleanup failed, so the safe transcript was used.' : 'Transcript recovered and copied to the clipboard.')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The recovered recording could not be transcribed.'
+      await markRecoveryFailed(id, message).catch(() => undefined)
+      return result(false, undefined, message)
+    }
+  })
+  ipcMain.handle('recovery:discard', async (event, id: unknown) => {
+    if (!isTrustedSender(event) || typeof id !== 'string') return result(false, undefined, 'Invalid recovered recording.')
+    await discardRecoveryRecording(id)
+    return result(true, 'Recovered recording discarded.')
+  })
   ipcMain.handle('dictionary:save', (event, entry) => (isTrustedSender(event) ? saveDictionary(entry as Omit<DictionaryEntry, 'id' | 'createdAt'> & { id?: string }) : result(false, undefined, 'Unauthorized request.')))
   ipcMain.handle('dictionary:delete', async (event, id: unknown) => {
     if (!isTrustedSender(event) || typeof id !== 'string') return result(false, undefined, 'Invalid dictionary entry.')
@@ -2147,6 +2416,7 @@ const registerIpc = (): void => {
   ipcMain.handle('transforms:delete', async (event, id: unknown) => {
     if (!isTrustedSender(event) || typeof id !== 'string') return result(false, undefined, 'Invalid transform.')
     await store.update((snapshot) => (snapshot.transforms = snapshot.transforms.filter((transform) => transform.id !== id || transform.builtIn)))
+    if (!shortcutRecording) await registerShortcuts(undefined, false)
     notifyBootstrapChanged()
     return result(true)
   })
@@ -2222,11 +2492,20 @@ const initialize = async (): Promise<void> => {
   store = new JsonStateStore(path.join(root, 'flowerwhisp.json'))
   secrets = new SecretStore(path.join(app.getPath('userData'), 'secrets'))
   await store.load()
-  pillEnabled = (await getSnapshot()).settings.showPill
+  await store.update((snapshot) => {
+    for (const recovery of snapshot.recoveries) {
+      if (recovery.status !== 'pending') continue
+      recovery.status = 'failed'
+      recovery.error = 'FlowerWhisp closed before this saved recording finished transcribing.'
+    }
+  })
+  const initialSnapshot = await getSnapshot()
+  pillEnabled = initialSnapshot.settings.showPill
+  pillPosition = initialSnapshot.settings.pillPosition
   pipeline = new DictationPipeline(store, secrets)
-  nativeTheme.themeSource = (await getSnapshot()).settings.theme
+  nativeTheme.themeSource = initialSnapshot.settings.theme
   createWindows()
-  applySystemSettings((await getSnapshot()).settings)
+  applySystemSettings(initialSnapshot.settings)
   registerIpc()
   createTray()
   setupPermissions()

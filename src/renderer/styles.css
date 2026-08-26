@@ -5281,3 +5281,276 @@ body[data-window="overlay"] .overlay-pill.is-ready {
   border-radius: 8px;
   background: var(--color-surface-muted);
 }
+
+/* A failed provider call must leave an obvious, first-class recovery action. */
+.recovery-banner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 48%, var(--color-border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-accent-soft) 62%, var(--color-surface));
+  box-shadow: var(--shadow-card);
+}
+
+.recovery-banner-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  color: var(--color-accent);
+  border-radius: 50%;
+  background: var(--color-surface);
+}
+
+.recovery-banner-copy { min-width: 0; }
+.recovery-banner-copy h2 { margin: 2px 0 4px; font-size: 18px; }
+.recovery-banner-copy p { margin: 0 0 6px; color: var(--color-text-secondary); }
+.recovery-banner-copy > span:last-child { color: var(--color-text-muted); font-size: 11px; }
+.recovery-banner-actions { display: flex; align-items: center; gap: 8px; }
+
+/* The native overlay is resized to these exact visible footprints, so there
+   is no transparent 150x64 rectangle intercepting clicks around the pill. */
+html[data-window="overlay"],
+body[data-window="overlay"],
+body[data-window="overlay"] #root {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+body[data-window="overlay"] .overlay-root {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+body[data-window="overlay"] .overlay-idle-mark {
+  display: inline-flex;
+  width: 40px;
+  min-width: 40px;
+  height: 16px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  overflow: hidden;
+  color: #fff;
+  border: 1px solid rgb(255 255 255 / 42%);
+  border-radius: 999px;
+  appearance: none;
+  clip-path: inset(0 round 999px);
+  background: #000;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 16%);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: width 160ms var(--ease-standard), height 160ms var(--ease-standard), border-color 160ms ease, box-shadow 160ms ease;
+}
+
+body[data-window="overlay"] .overlay-idle-mark svg,
+body[data-window="overlay"] .overlay-idle-mark span {
+  flex: 0 0 auto;
+  opacity: 0;
+  transform: scale(.75);
+  transition: opacity 110ms ease, transform 160ms var(--ease-standard);
+}
+
+body[data-window="overlay"] .overlay-idle-mark span {
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+body[data-window="overlay"] .overlay-idle-mark:hover,
+body[data-window="overlay"] .overlay-idle-mark:focus-visible {
+  width: 110px;
+  min-width: 110px;
+  height: 28px;
+  border-color: rgb(255 255 255 / 62%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 20%);
+}
+
+body[data-window="overlay"] .overlay-idle-mark:hover svg,
+body[data-window="overlay"] .overlay-idle-mark:hover span,
+body[data-window="overlay"] .overlay-idle-mark:focus-visible svg,
+body[data-window="overlay"] .overlay-idle-mark:focus-visible span {
+  opacity: 1;
+  transform: scale(1);
+}
+
+body[data-window="overlay"] .overlay-pill {
+  width: 64px;
+  min-width: 64px;
+  max-width: 64px;
+  height: 32px;
+  min-height: 32px;
+  max-height: 32px;
+  padding: 3px 4px;
+  gap: 2px;
+  overflow: hidden;
+  border-color: rgb(255 255 255 / 18%);
+  border-radius: 999px;
+  clip-path: inset(0 round 999px);
+  background: #000;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 12%);
+}
+
+body[data-window="overlay"] .overlay-pill.is-recording {
+  width: 100px;
+  min-width: 100px;
+  max-width: 100px;
+}
+
+body[data-window="overlay"] .overlay-pill.is-processing { width: 64px; min-width: 64px; max-width: 64px; background: #000; }
+body[data-window="overlay"] .overlay-pill.is-ready { width: 66px; min-width: 66px; max-width: 66px; background: #000; }
+body[data-window="overlay"] .overlay-pill.is-error { width: 30px; min-width: 30px; max-width: 30px; height: 30px; min-height: 30px; max-height: 30px; }
+body[data-window="overlay"] .overlay-pill .icon-button { width: 20px; height: 20px; flex-basis: 20px; }
+body[data-window="overlay"] .overlay-pill .icon-button svg { width: 13px; height: 13px; }
+body[data-window="overlay"] .pill-visualizer { width: 48px; min-width: 48px; gap: 2px; }
+body[data-window="overlay"] .pill-graph { width: 30px; height: 22px; gap: 1px; }
+body[data-window="overlay"] .pill-graph span { width: 2px; max-height: 21px; background: #fff; box-shadow: 0 0 4px rgb(255 255 255 / 30%); }
+body[data-window="overlay"] .pill-time { width: 16px; color: #fff; font-size: 7px; }
+
+@media (max-width: 760px) {
+  .recovery-banner { grid-template-columns: auto 1fr; }
+  .recovery-banner-actions { grid-column: 1 / -1; justify-content: flex-end; }
+}
+
+.transform-card {
+  display: flex;
+  min-width: 0;
+  min-height: 318px;
+  padding: 24px;
+  flex-direction: column;
+}
+
+.transform-card h3 {
+  margin: 0 0 9px;
+  font-size: 18px;
+}
+
+.transform-card > p {
+  min-height: 58px;
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 1.42;
+}
+
+.transform-shortcut-editor {
+  display: grid;
+  gap: 7px;
+  padding-top: 18px;
+  margin-top: auto;
+}
+
+.transform-shortcut-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.transform-shortcut-heading button,
+.transform-new-shortcut > button {
+  padding: 0;
+  color: var(--color-text-secondary);
+  border: 0;
+  background: transparent;
+  font-size: 10px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.transform-shortcut-value {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-muted);
+}
+
+.transform-shortcut-value > span { font-size: 11px; font-weight: 650; }
+.transform-shortcut-value small { color: var(--color-text-muted); font-size: 9px; text-align: right; }
+.transform-shortcut-value.is-ready { border-color: color-mix(in srgb, var(--color-success) 45%, var(--color-border)); }
+.transform-shortcut-value.is-error { border-color: color-mix(in srgb, var(--color-danger) 55%, var(--color-border)); }
+.transform-shortcut-editor .shortcut-recorder { min-height: 42px; }
+
+.transform-shortcut-status {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 9px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transform-shortcut-status.is-ready { color: var(--color-success); }
+.transform-shortcut-status.is-error { color: var(--color-danger); }
+
+.transform-card-actions {
+  position: static;
+  right: auto;
+  bottom: auto;
+  display: flex;
+  min-height: 40px;
+  padding-top: 14px;
+  margin-top: 14px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid var(--color-border);
+}
+
+.transform-card-actions .button-quiet {
+  min-height: 32px;
+  padding: 5px 8px;
+}
+
+.transform-card-actions .toggle {
+  position: static;
+  right: auto;
+  bottom: auto;
+  flex: 0 0 auto;
+}
+
+.create-transform-card {
+  min-height: 318px;
+  justify-content: center;
+}
+
+.create-transform-card > p { min-height: 0; }
+
+.transform-new-shortcut {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) minmax(0, 1fr) minmax(210px, 320px) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface-muted);
+}
+
+.transform-new-shortcut > span { color: var(--color-text-secondary); font-size: 12px; }
+.transform-new-shortcut > strong { font-size: 11px; }

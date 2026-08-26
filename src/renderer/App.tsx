@@ -71,7 +71,7 @@ type NavIcon = PhosphorIcon
 const emptySettings: PublicSettings = {
   transcriptionProvider: 'groq',
   transcriptionModel: 'whisper-large-v3-turbo',
-  llmProvider: 'none',
+  llmProvider: 'groq',
   llmModel: 'openai/gpt-oss-20b',
   language: 'en',
   cleanupLevel: 'light',
@@ -85,6 +85,7 @@ const emptySettings: PublicSettings = {
   localWorkingDirectory: '',
   launchAtLogin: false,
   showPill: true,
+  pillPosition: 'center',
   showInDock: true,
   playSounds: false,
   muteMusicWhileDictating: false,
@@ -114,6 +115,7 @@ const emptyBootstrap = (): BootstrapPayload => ({
   snippets: [],
   styles: [],
   transforms: [],
+  recoveries: [],
   usage: [],
   scratchpad: '',
   hasGroqKey: false,
@@ -122,6 +124,7 @@ const emptyBootstrap = (): BootstrapPayload => ({
   shortcutRegistered: false,
   registeredShortcut: '',
   shortcutRegistrations: Object.fromEntries(Object.keys(DEFAULT_SHORTCUT_BINDINGS).map((action) => [action, { registered: [], unavailable: [] }])) as unknown as BootstrapPayload['shortcutRegistrations'],
+  transformShortcutRegistrations: {},
   capabilities: {
     microphone: true,
     cloudTranscription: true,
@@ -163,6 +166,7 @@ const offlineApi: FlowerWhispApi = {
     reportLevel: () => undefined,
     reportError: () => undefined,
   },
+  pill: { setHovered: () => undefined },
   settings: {
     save: async () => offlineResponse(),
     setShortcutRecording: async () => offlineResponse(),
@@ -177,6 +181,10 @@ const offlineApi: FlowerWhispApi = {
     undo: async () => offlineResponse(),
     retry: async () => offlineResponse(),
     extract: async () => offlineResponse(),
+  },
+  recovery: {
+    retry: async () => offlineResponse(),
+    discard: async () => offlineResponse(),
   },
   dictionary: {
     save: async () => offlineResponse(),
@@ -554,7 +562,7 @@ const ShortcutRecorder = ({
         {display.split('+').filter(Boolean).map((part) => <kbd key={part}>{shortcutPartLabel(part)}</kbd>)}
         {!display ? <span className="shortcut-recorder-empty">No shortcut</span> : null}
       </span>
-      <span className="shortcut-recorder-hint">{listening ? (action === 'pushToTalk' || action === 'commandMode') && pending && isValidShortcutForAction(action, pending) ? 'Release to save' : 'Press keys or mouse…' : 'Click to add'}</span>
+      <span className="shortcut-recorder-hint">{listening ? (action === 'pushToTalk' || action === 'commandMode') && pending && isValidShortcutForAction(action, pending) ? 'Release to save' : 'Press keys or mouse…' : value ? 'Click to change' : 'Click to add'}</span>
       {error ? <span className="shortcut-recorder-error" role="alert">{error}</span> : null}
     </button>
   )
@@ -654,7 +662,7 @@ const WaveBars = ({ level = 0, compact = false }: { level?: number; compact?: bo
 const PillGraph = ({ level = 0, elapsedMs = 0 }: { level?: number; elapsedMs?: number }) => {
   const frame = useSignalFrame(level, 0.24)
   const activity = Math.max(0.18, Math.min(1, frame.level * 2.15))
-  return <div className="pill-visualizer" aria-label={frame.level > 0.03 ? 'Live microphone level' : 'Microphone waiting'}><div className="pill-graph" aria-hidden="true">{Array.from({ length: 12 }, (_, index) => {
+  return <div className="pill-visualizer" aria-label={frame.level > 0.03 ? 'Live microphone level' : 'Microphone waiting'}><div className="pill-graph" aria-hidden="true">{Array.from({ length: 10 }, (_, index) => {
     const envelope = 0.3 + Math.pow(Math.abs(Math.sin(index * 0.78 + frame.phase)), 1.35) * 0.7
     const height = 3 + activity * envelope * 25
     const scale = 0.88 + envelope * 0.12
@@ -821,7 +829,7 @@ const Ledger = ({ records, onCopy, onDelete, onPlay, playingId, onAction }: { re
                 <p>{recordSummary(record)}</p>
                 <div className="ledger-meta">
                   <span>{record.transcriptionProvider === 'groq' ? 'Groq' : 'Local'}</span>
-                  <span>{record.cleanupLevel === 'none' ? 'raw' : `${record.cleanupLevel} cleanup`}</span>
+                  <span>{record.cleanupStatus === 'applied' ? `${record.cleanupLevel} cleanup applied` : record.cleanupStatus === 'unchanged' ? `${record.cleanupLevel} cleanup checked` : record.cleanupStatus === 'failed' ? 'cleanup failed · safe text used' : 'raw'}</span>
                   <span>{formatDuration(record.durationMs)}</span>
                   <span>{record.insertionOutcome === 'inserted' ? 'inserted in active app' : record.insertionOutcome === 'copied' ? 'copied for paste' : record.insertionOutcome === 'scratchpad' ? 'sent to Scratchpad' : 'not inserted'}</span>
                 </div>
@@ -847,8 +855,15 @@ const Ledger = ({ records, onCopy, onDelete, onPlay, playingId, onAction }: { re
   )
 }
 
-const DictationPage = ({ data, overlay, onStart, onOpenStyle, onStop, onCancel, onCopy, onScratchpad, onDelete, onPlay, playingId, onAction }: { data: BootstrapPayload; overlay: OverlayState; onStart: () => void; onOpenStyle: () => void; onStop: () => void; onCancel: () => void; onCopy: (text?: string) => void; onScratchpad: () => void; onDelete: (id: string) => void; onPlay: (record: DictationRecord) => void; playingId: string | null; onAction: (record: DictationRecord, action: TranscriptAction) => void }) => (
+const RecoveryBanner = ({ data, onRetry, onDiscard }: { data: BootstrapPayload; onRetry: (id: string) => void; onDiscard: (id: string) => void }) => {
+  const recovery = data.recoveries[0]
+  if (!recovery) return null
+  return <section className="recovery-banner" role="alert"><div className="recovery-banner-icon"><ShieldCheck size={24} weight="fill" /></div><div className="recovery-banner-copy"><span className="detail-kicker">Recording recovered</span><h2>Your audio is safe. Retry the transcript.</h2><p>{recovery.error || 'The previous transcription did not finish, but FlowerWhisp saved the recording before sending it to the provider.'}</p><span>{formatDuration(recovery.durationMs)} · {formatDate(recovery.createdAt)}{recovery.retryCount > 0 ? ` · ${recovery.retryCount} retry${recovery.retryCount === 1 ? '' : 'ies'}` : ''}</span></div><div className="recovery-banner-actions"><Button variant="primary" icon={ArrowsClockwise} onClick={() => onRetry(recovery.id)} disabled={recovery.status === 'pending'}>{recovery.status === 'pending' ? 'Retrying…' : 'Retry transcript'}</Button><Button variant="quiet" onClick={() => onDiscard(recovery.id)}>Discard audio</Button></div></section>
+}
+
+const DictationPage = ({ data, overlay, onStart, onOpenStyle, onStop, onCancel, onCopy, onScratchpad, onDelete, onPlay, playingId, onAction, onRetryRecovery, onDiscardRecovery }: { data: BootstrapPayload; overlay: OverlayState; onStart: () => void; onOpenStyle: () => void; onStop: () => void; onCancel: () => void; onCopy: (text?: string) => void; onScratchpad: () => void; onDelete: (id: string) => void; onPlay: (record: DictationRecord) => void; playingId: string | null; onAction: (record: DictationRecord, action: TranscriptAction) => void; onRetryRecovery: (id: string) => void; onDiscardRecovery: (id: string) => void }) => (
   <div className="page page-dictation">
+    <RecoveryBanner data={data} onRetry={onRetryRecovery} onDiscard={onDiscardRecovery} />
     <CaptureBand overlay={overlay} onStart={onStart} onOpenStyle={onOpenStyle} onStop={onStop} onCancel={onCancel} onCopy={onCopy} onScratchpad={onScratchpad} />
     <SummaryRail data={data} />
     <Ledger records={data.records} onCopy={(record) => onCopy(record.finalText)} onDelete={onDelete} onPlay={onPlay} playingId={playingId} onAction={onAction} />
@@ -1024,7 +1039,7 @@ const StylePage = ({ styles, settings, onRefresh }: { styles: StyleProfile[]; se
     setSelectedId(id)
     if (styles.some((style) => style.id === id)) void api.settings.save({ defaultStyle: id }).then(onRefresh)
   }
-  const chooseCleanup = (level: CleanupLevel) => void api.settings.save({ cleanupLevel: level }).then(onRefresh)
+  const chooseCleanup = (level: CleanupLevel) => void api.settings.save({ cleanupLevel: level, llmProvider: level === 'none' ? 'none' : 'groq' }).then(onRefresh)
   const saveCleanupPrompt = async (value: string): Promise<CommandResult> => {
     if (!editingCleanup) return { ok: false, error: 'Choose a cleanup level first.' }
     const response = await api.settings.save({ cleanupPrompts: { ...(settings.cleanupPrompts ?? emptySettings.cleanupPrompts), [editingCleanup]: value } })
@@ -1059,17 +1074,19 @@ const HowItWorksModal = ({ onClose, onTryItOut }: { onClose: () => void; onTryIt
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="video-modal" role="dialog" aria-modal="true" aria-labelledby="transform-video-title"><div className="video-modal-header"><div><span className="detail-kicker">Transforms · Beta</span><h2 id="transform-video-title">How to use Transforms</h2><p>Build a reusable instruction and enable it when you want to rewrite dictated text.</p></div><IconButton label="Close transform guide" icon={X} onClick={onClose} /></div><div className="video-stage how-it-works-copy"><ol><li>Create a transform with a clear name and instruction.</li><li>Enable it from the transform card when you want it available.</li><li>Use the configured transform shortcut while text is selected.</li></ol><span>Transforms work anywhere you write when the selected transform is enabled.</span></div><div className="video-modal-footer"><Button variant="quiet" onClick={onClose}>Close</Button><Button variant="primary" onClick={onTryItOut}>Create a transform</Button></div></section></div>
 }
 
-const TransformsPage = ({ transforms, onRefresh }: { transforms: TransformProfile[]; onRefresh: () => void }) => {
+const TransformsPage = ({ data, onRefresh }: { data: BootstrapPayload; onRefresh: () => void }) => {
+  const transforms = data.transforms
   const [showForm, setShowForm] = useState(false)
   const [showHowItWorks, setShowHowItWorks] = useState(false)
   const [editingTransform, setEditingTransform] = useState<TransformProfile | null>(null)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [instructions, setInstructions] = useState('')
-  const save = async (event: FormEvent) => { event.preventDefault(); const response = await api.transforms.save({ id: `custom-${Date.now()}`, name, description, instructions, shortcut: '', enabled: true }); if (response.ok) { setName(''); setDescription(''); setInstructions(''); setShowForm(false); onRefresh() } }
+  const [shortcut, setShortcut] = useState('')
+  const save = async (event: FormEvent) => { event.preventDefault(); const response = await api.transforms.save({ id: `custom-${Date.now()}`, name, description, instructions, shortcut, enabled: true }); if (response.ok) { setName(''); setDescription(''); setInstructions(''); setShortcut(''); setShowForm(false); onRefresh() } }
   const builtInCards = [
-    { id: 'polish', name: 'Polish', description: 'Improve clarity and conciseness' },
-    { id: 'prompt-engineer', name: 'Prompt Engineer', description: '**Title** (1 concise line…' },
+    { id: 'polish', name: 'Polish' },
+    { id: 'prompt-engineer', name: 'Prompt Engineer' },
   ]
   const builtInTransforms = builtInCards.map((card) => ({ card, transform: transforms.find((candidate) => candidate.id === card.id) }))
   const customTransforms = transforms.filter((transform) => !transform.builtIn)
@@ -1083,14 +1100,32 @@ const TransformsPage = ({ transforms, onRefresh }: { transforms: TransformProfil
     }
     return response
   }
+  const saveShortcut = async (transform: TransformProfile, value: string): Promise<CommandResult> => {
+    const response = await api.transforms.save({ ...transform, shortcut: value })
+    if (response.ok) onRefresh()
+    return response
+  }
+  const shortcutEditor = (transform: TransformProfile) => {
+    const registration = data.transformShortcutRegistrations[transform.id]
+    const status = registration?.registered
+      ? 'Active globally'
+      : registration?.error
+        ? registration.error
+        : transform.shortcut && !transform.enabled
+          ? 'Enable this Transform to activate it'
+          : transform.shortcut
+            ? 'Not registered'
+            : 'Not assigned'
+    return <div className="transform-shortcut-editor"><div className="transform-shortcut-heading"><span>Window shortcut</span>{transform.shortcut ? <button type="button" onClick={() => void saveShortcut(transform, '')}>Clear</button> : null}</div><ShortcutRecorder label={transform.shortcut ? `Change ${transform.name} shortcut` : `Set ${transform.name} shortcut`} action="handsFree" value={transform.shortcut} onChange={(value) => saveShortcut(transform, value)} /><span className={`transform-shortcut-status ${registration?.error ? 'is-error' : registration?.registered ? 'is-ready' : ''}`}><span className="shortcut-status-dot" />{status}</span></div>
+  }
   return <div className="page page-transforms reference-transforms-page">
      <div className="transform-options"><span>Enable a transform from its card when you want it available.</span><span className="transform-key-help">Edit the prompt from its card before using it.</span></div>
     <section className="transform-promo"><h2>Transform works anywhere you write</h2><p>Apply a Transform to rewrite, clean up, or restructure text after you dictate.</p><div><Button variant="secondary" onClick={() => setShowForm((value) => !value)}>Try it out</Button><button type="button" onClick={() => setShowHowItWorks(true)}>How it works</button></div></section>
     <div className="transform-heading"><h2>My Transforms</h2><button type="button" onClick={() => void reset()}>↶ &nbsp; Reset to defaults</button><Button variant="primary" onClick={() => setShowForm(true)}>Create New</Button></div>
-    {showForm ? <form className="transform-form" onSubmit={save}><div className="field-grid"><div><label htmlFor="transform-name">Name</label><input id="transform-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Make it concise" required /></div><div><label htmlFor="transform-description">Description</label><input id="transform-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="One-line explanation" /></div></div><label htmlFor="transform-instructions">Prompt</label><textarea id="transform-instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} rows={4} placeholder="Describe how Flow should rewrite the selected text." required /><div className="form-actions"><Button variant="primary" type="submit" icon={Check}>Save</Button><Button variant="quiet" onClick={() => setShowForm(false)}>Cancel</Button></div></form> : null}
+    {showForm ? <form className="transform-form" onSubmit={save}><div className="field-grid"><div><label htmlFor="transform-name">Name</label><input id="transform-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Make it concise" required /></div><div><label htmlFor="transform-description">Description</label><input id="transform-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="One-line explanation" /></div></div><label htmlFor="transform-instructions">Prompt</label><textarea id="transform-instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} rows={4} placeholder="Describe how Flow should rewrite the selected text." required /><div className="transform-new-shortcut"><span>Window shortcut (optional)</span>{shortcut ? <strong>{formatShortcut(shortcut)}</strong> : null}<ShortcutRecorder label={shortcut ? 'Change shortcut' : 'Set shortcut'} action="handsFree" value="" onChange={async (value) => { setShortcut(value); return { ok: true } }} />{shortcut ? <button type="button" onClick={() => setShortcut('')}>Clear</button> : null}</div><div className="form-actions"><Button variant="primary" type="submit" icon={Check}>Save</Button><Button variant="quiet" onClick={() => setShowForm(false)}>Cancel</Button></div></form> : null}
     <div className="transform-card-grid">
-       {builtInTransforms.map(({ card, transform }) => transform ? <div className="transform-card" key={transform.id}><h3>{card.name}</h3><p>{card.description}</p><div className="transform-card-actions"><Button variant="quiet" onClick={() => setEditingTransform(transform)}>Edit prompt</Button><Toggle label={card.name} checked={transform.enabled} onChange={(value) => { void api.transforms.save({ ...transform, enabled: value }).then(onRefresh) }} /></div></div> : null)}
-       {customTransforms.map((transform) => <div className="transform-card" key={transform.id}><h3>{transform.name}</h3><p>{transform.description || 'Custom rewrite instruction'}</p><div className="transform-card-actions"><Button variant="quiet" onClick={() => setEditingTransform(transform)}>Edit prompt</Button><Toggle label={transform.name} checked={transform.enabled} onChange={(value) => { void api.transforms.save({ ...transform, enabled: value }).then(onRefresh) }} /><IconButton label={`Delete ${transform.name}`} icon={Trash} onClick={async () => { await api.transforms.delete(transform.id); onRefresh() }} /></div></div>)}
+       {builtInTransforms.map(({ card, transform }) => transform ? <div className="transform-card" key={transform.id}><h3>{card.name}</h3><p>{transform.description}</p>{shortcutEditor(transform)}<div className="transform-card-actions"><Button variant="quiet" onClick={() => setEditingTransform(transform)}>Edit prompt</Button><Toggle label={card.name} checked={transform.enabled} onChange={(value) => { void api.transforms.save({ ...transform, enabled: value }).then(onRefresh) }} /></div></div> : null)}
+       {customTransforms.map((transform) => <div className="transform-card" key={transform.id}><h3>{transform.name}</h3><p>{transform.description || 'Custom rewrite instruction'}</p>{shortcutEditor(transform)}<div className="transform-card-actions"><Button variant="quiet" onClick={() => setEditingTransform(transform)}>Edit prompt</Button><Toggle label={transform.name} checked={transform.enabled} onChange={(value) => { void api.transforms.save({ ...transform, enabled: value }).then(onRefresh) }} /><IconButton label={`Delete ${transform.name}`} icon={Trash} onClick={async () => { await api.transforms.delete(transform.id); onRefresh() }} /></div></div>)}
       <button className="transform-card create-transform-card" type="button" onClick={() => setShowForm(true)}><span className="transform-plus">＋</span><h3>Create your own</h3><p>Upload your own prompt</p></button>
     </div>
     {showHowItWorks ? <HowItWorksModal onClose={() => setShowHowItWorks(false)} onTryItOut={() => { setShowHowItWorks(false); setShowForm(true) }} /> : null}
@@ -1143,6 +1178,7 @@ const SettingsPage = ({ data, onRefresh, onThemePreview }: { data: BootstrapPayl
           <SettingGroup title="App settings">
             <SettingRow label="Launch app at login" description=""><Toggle label="Launch app at login" checked={draft.launchAtLogin} onChange={(value) => void persist({ launchAtLogin: value })} /></SettingRow>
             <SettingRow label="Show Flow Bar at all times" description=""><Toggle label="Show Flow Bar at all times" checked={draft.showPill} onChange={(value) => void persist({ showPill: value })} /></SettingRow>
+            <SettingRow label="Flow Bar position" description="Keep the pill out of the part of the screen where you work."><select value={draft.pillPosition} onChange={(event) => update('pillPosition', event.target.value as PublicSettings['pillPosition'])}><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option></select></SettingRow>
             <SettingRow label="Show app in dock" description=""><Toggle label="Show app in dock" checked={draft.showInDock} onChange={(value) => void persist({ showInDock: value })} /></SettingRow>
           </SettingGroup>
         </SettingsSection>
@@ -1189,7 +1225,7 @@ const SettingsPage = ({ data, onRefresh, onThemePreview }: { data: BootstrapPayl
           <SettingRow label="Groq API key" description=""><div className="secret-field"><input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder={data.hasGroqKey ? 'Replace saved key' : 'Paste key to save'} /><Button variant="secondary" onClick={async () => { const response = await api.settings.setGroqKey(key); if (response.ok) { setKey(''); onRefresh() } }}>Save</Button>{data.hasGroqKey ? <Button variant="quiet" onClick={async () => { await api.settings.clearGroqKey(); onRefresh() }}>Remove</Button> : null}</div></SettingRow>
           <SettingRow label="Local model command" description=""><input value={draft.localCommand} onChange={(event) => update('localCommand', event.target.value)} /></SettingRow>
           <SettingRow label="Local model folder" description=""><input value={draft.localWorkingDirectory} onChange={(event) => update('localWorkingDirectory', event.target.value)} /></SettingRow>
-          <SettingRow label="LLM cleanup provider" description=""><select value={draft.llmProvider} onChange={(event) => update('llmProvider', event.target.value as PublicSettings['llmProvider'])}><option value="none">Off</option><option value="groq">Groq text cleanup</option></select></SettingRow>
+          <SettingRow label="LLM cleanup provider" description="Light or Medium cleanup sends a separate text request to Groq after transcription."><select value={draft.cleanupLevel === 'none' ? 'none' : 'groq'} onChange={(event) => { const provider = event.target.value as PublicSettings['llmProvider']; void persist({ llmProvider: provider, cleanupLevel: provider === 'none' ? 'none' : draft.cleanupLevel === 'none' ? 'light' : draft.cleanupLevel }) }}><option value="none">Off</option><option value="groq">Groq text cleanup</option></select></SettingRow>
           <SettingRow label="LLM model" description=""><input value={draft.llmModel} onChange={(event) => update('llmModel', event.target.value)} /></SettingRow>
         </SettingsSection>
       case 'privacy':
@@ -1272,7 +1308,7 @@ const OverlayPill = ({ overlay }: { overlay: OverlayState }) => {
     ? Math.max(overlay.elapsedMs, clockNow - timerStart.current.startedAt)
     : overlay.elapsedMs
 
-  if (resting) return <div className="overlay-root is-resting" role="status" aria-label="Flow is ready"><span className="overlay-idle-mark" aria-hidden="true" /><span className="sr-only">Flow is ready</span></div>
+  if (resting) return <div className="overlay-root is-resting"><button className="overlay-idle-mark" type="button" aria-label="Start dictation" onPointerEnter={() => api.pill.setHovered(true)} onPointerLeave={() => api.pill.setHovered(false)} onClick={() => void api.dictation.start({ mode: 'toggle' })}><Microphone size={15} weight="fill" /><span>Start dictation</span></button></div>
   const stateLabel = `${phaseLabel[overlay.phase]}${overlay.message ? `: ${overlay.message}` : ''}`
   return <div className={`overlay-root ${busy ? 'is-busy' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`}><div className={`overlay-pill ${recording ? 'is-recording' : ''} ${processing ? 'is-processing' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`} aria-label={stateLabel} aria-live="polite" data-phase={overlay.phase}><span className="sr-only">{stateLabel}</span><div className="overlay-copy"><div className="overlay-state"><span className={`overlay-dot ${busy ? 'is-live' : ''}`} /><span className="overlay-label">{phaseLabel[overlay.phase]}</span><span className="overlay-mode">{overlay.mode === 'hold' ? 'hold' : 'toggle'}</span><span className="overlay-time">{formatDuration(liveElapsedMs)}</span></div><p>{overlay.message}</p></div>{cancelable ? <IconButton label="Cancel dictation" icon={X} onClick={() => void api.dictation.cancel()} /> : null}{recording ? <PillGraph level={overlay.level} elapsedMs={liveElapsedMs} /> : null}{processing ? <span className="overlay-processing" aria-label="Processing" /> : null}{recording && overlay.mode === 'toggle' ? <IconButton label="Finish dictation" icon={Check} onClick={() => void api.dictation.stop()} /> : null}{error ? <IconButton label="Dismiss error" icon={X} onClick={() => void api.dictation.cancel()} /> : null}</div></div>
 }
@@ -1295,8 +1331,13 @@ export function App() {
 
   useEffect(() => {
     document.title = 'Flow'
-    document.body.dataset.window = isOverlay ? 'overlay' : 'main'
-    return () => { delete document.body.dataset.window }
+    const rendererWindow = isOverlay ? 'overlay' : 'main'
+    document.documentElement.dataset.window = rendererWindow
+    document.body.dataset.window = rendererWindow
+    return () => {
+      delete document.documentElement.dataset.window
+      delete document.body.dataset.window
+    }
   }, [isOverlay])
 
   const notify = useCallback((message: string, tone: 'success' | 'error' | 'neutral' = 'success') => setNotice({ message, tone }), [])
@@ -1337,7 +1378,7 @@ export function App() {
       if (candidate.kind === 'navigate' && candidate.page) setPage(candidate.page)
       if (candidate.kind === 'shortcut-unavailable') { void refresh(); notify(candidate.error ?? `Could not register ${candidate.shortcut ?? 'the shortcut'}. Choose another combination.`, 'error') }
       if (candidate.kind === 'shortcut-ready') { void refresh(); notify(`Global dictation shortcut ready: ${(candidate.shortcut ?? '').replaceAll('Control', 'Ctrl').replaceAll('Super', 'Win')}`, 'neutral') }
-      if (candidate.kind === 'shortcuts-ready') { void refresh(); notify('Push-to-talk and hands-free shortcuts are active globally.', 'neutral') }
+      if (candidate.kind === 'shortcuts-ready') { void refresh(); notify('Shortcut actions updated.', 'neutral') }
       if (candidate.kind === 'action-error') notify(candidate.error ?? 'The shortcut action could not be completed.', 'error')
       if (candidate.kind === 'action-ready') notify(candidate.error ?? 'Shortcut action completed.', 'neutral')
     })
@@ -1537,17 +1578,29 @@ export function App() {
     if (response.ok) notify(response.message ?? 'Audio extracted as FLAC.')
     else if (response.error !== 'Audio extraction canceled.') notify(response.error ?? 'Could not extract audio.', 'error')
   }
+  const retryRecovery = async (id: string) => {
+    const response = await api.recovery.retry(id)
+    if (response.ok) notify(response.message ?? 'Transcript recovered and copied.')
+    else notify(response.error ?? 'Could not retry the recovered recording.', 'error')
+    void refresh()
+  }
+  const discardRecovery = async (id: string) => {
+    const response = await api.recovery.discard(id)
+    if (response.ok) notify(response.message ?? 'Recovered audio discarded.', 'neutral')
+    else notify(response.error ?? 'Could not discard the recovered recording.', 'error')
+    void refresh()
+  }
 
   if (isOverlay) return <OverlayPill overlay={overlay} />
 
   const renderPage = () => {
     switch (page) {
-      case 'dictation': return <DictationPage data={data} overlay={overlay} onStart={() => void start()} onOpenStyle={() => setPage('style')} onStop={() => void stop()} onCancel={() => void cancel()} onCopy={() => void copy()} onScratchpad={() => void scratchpad()} onDelete={deleteRecord} onPlay={playRecord} playingId={playingId} onAction={transcriptAction} />
+      case 'dictation': return <DictationPage data={data} overlay={overlay} onStart={() => void start()} onOpenStyle={() => setPage('style')} onStop={() => void stop()} onCancel={() => void cancel()} onCopy={() => void copy()} onScratchpad={() => void scratchpad()} onDelete={deleteRecord} onPlay={playRecord} playingId={playingId} onAction={transcriptAction} onRetryRecovery={(id) => void retryRecovery(id)} onDiscardRecovery={(id) => void discardRecovery(id)} />
       case 'insights': return <InsightsPage data={data} />
       case 'dictionary': return <DictionaryPage entries={data.dictionary} onRefresh={() => void refresh()} />
       case 'snippets': return <SnippetsPage snippets={data.snippets} onRefresh={() => void refresh()} />
       case 'style': return <StylePage styles={data.styles} settings={data.settings} onRefresh={() => void refresh()} />
-      case 'transforms': return <TransformsPage transforms={data.transforms} onRefresh={() => void refresh()} />
+      case 'transforms': return <TransformsPage data={data} onRefresh={() => void refresh()} />
       case 'scratchpad': return <ScratchpadPage value={data.scratchpad} onRefresh={() => void refresh()} />
       case 'settings': return <SettingsPage data={data} onRefresh={() => void refresh()} onThemePreview={setThemePreview} />
     }
