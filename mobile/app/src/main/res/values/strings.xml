@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">FlowerWhisp</string>
+    <string name="accessibility_service_label">FlowerWhisp text insertion</string>
+    <string name="accessibility_service_description">Shows the FlowerWhisp dictation bubble for supported text fields and inserts only the text you dictate. FlowerWhisp does not use accessibility access to read unrelated app content.</string>
+    <string name="notification_channel_name">FlowerWhisp dictation</string>
+    <string name="notification_channel_description">Keeps the dictation bubble and active recording reliable.</string>
+</resources>
