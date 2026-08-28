@@ -69,6 +69,7 @@ const appUserModelId = 'com.flowerwhisp.desktop'
 const appIconPath = path.join(__dirname, '../../assets/flowerwhisp.png')
 const isSmoke = process.env.FLOWERWHISP_SMOKE === '1'
 const devUrl = process.env.FLOWERWHISP_DEV_URL
+const ERROR_OVERLAY_DURATION_MS = 5_000
 
 if (isSmoke) {
   app.setPath('userData', path.join(process.cwd(), 'artifacts', 'runtime-data'))
@@ -159,6 +160,7 @@ const defaultOverlay = (): OverlayState => ({
 
 let overlayState = defaultOverlay()
 let elapsedTicker: NodeJS.Timeout | null = null
+let overlayHideTimer: NodeJS.Timeout | null = null
 
 const makeTrayImage = () => {
   return nativeImage.createFromPath(appIconPath).resize({ width: 16, height: 16 })
@@ -280,7 +282,15 @@ const startElapsedTicker = (): void => {
 
 const isRestingOverlayPhase = (phase: DictationPhase): boolean => ['idle', 'success', 'cancelled'].includes(phase)
 
+const cancelOverlayHide = (): void => {
+  if (!overlayHideTimer) return
+  clearTimeout(overlayHideTimer)
+  overlayHideTimer = null
+}
+
 const publishOverlay = (patch: Partial<OverlayState>): void => {
+  // A new state supersedes any delayed reset from an older success or error.
+  cancelOverlayHide()
   overlayState = { ...overlayState, ...patch }
   if (!isRestingOverlayPhase(overlayState.phase)) pillHovered = false
   send('dictation:state', overlayState)
@@ -297,7 +307,7 @@ const advance = (phase: DictationPhase, patch: Partial<OverlayState> = {}): void
 const overlaySize = (): { width: number; height: number } => {
   if (isRestingOverlayPhase(overlayState.phase)) return pillHovered ? { width: 116, height: 32 } : { width: 46, height: 22 }
   if (overlayState.phase === 'recording') return { width: 104, height: 38 }
-  if (overlayState.phase === 'error') return { width: 34, height: 34 }
+  if (overlayState.phase === 'error') return { width: 332, height: 104 }
   if (overlayState.phase === 'ready') return { width: 70, height: 36 }
   return { width: 68, height: 36 }
 }
@@ -326,7 +336,9 @@ const showOverlay = (): void => {
 
 const hideOverlay = (delayMs = 0): void => {
   if (!overlayWindow || overlayWindow.isDestroyed()) return
+  cancelOverlayHide()
   const reset = (): void => {
+    overlayHideTimer = null
     const previous = overlayState
     publishOverlay({
       ...defaultOverlay(),
@@ -336,8 +348,9 @@ const hideOverlay = (delayMs = 0): void => {
     if (pillEnabled) showOverlay()
     else overlayWindow?.hide()
   }
-  if (delayMs <= 0) reset()
-  else setTimeout(reset, delayMs)
+  const resolvedDelayMs = delayMs > 0 && overlayState.phase === 'error' ? ERROR_OVERLAY_DURATION_MS : delayMs
+  if (resolvedDelayMs <= 0) reset()
+  else overlayHideTimer = setTimeout(reset, resolvedDelayMs)
 }
 
 const windowBackgroundColor = (): string => nativeTheme.shouldUseDarkColors ? '#000000' : '#f4f0e9'
@@ -1878,6 +1891,13 @@ const stopSession = async (): Promise<CommandResult> => {
 }
 
 const cancelSession = async (): Promise<CommandResult> => {
+  if (overlayState.phase === 'error') {
+    if (activeSession) mainWindow?.webContents.send('recording:cancel', { sessionId: activeSession.id })
+    stopElapsedTicker()
+    activeSession = null
+    hideOverlay()
+    return result(true, 'Transcription error dismissed.')
+  }
   if (!activeSession) return result(false, undefined, 'There is no active dictation.')
   const sessionId = activeSession.id
   mainWindow?.webContents.send('recording:cancel', { sessionId })
@@ -1953,6 +1973,7 @@ const handleAudio = async (payload: { sessionId: string; dataUrl: string; mimeTy
     const message = error instanceof Error ? error.message : 'The dictation could not be processed.'
     if (recovery) await markRecoveryFailed(recovery.id, message).catch((recoveryError) => console.error('Could not mark the recording for recovery', recoveryError))
     advance('error', { message: 'The safe capture was not inserted.', error: message, copyAvailable: false })
+    hideOverlay(ERROR_OVERLAY_DURATION_MS)
     return result(false, undefined, message)
   }
 }

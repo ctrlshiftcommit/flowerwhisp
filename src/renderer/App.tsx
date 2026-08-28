@@ -1281,6 +1281,25 @@ const CommandModeModal = ({ state, onClose }: { state: CommandModeState; onClose
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="command-mode-modal" role="dialog" aria-modal="true" aria-labelledby="command-mode-title"><div className="reference-modal-heading"><div><span className="detail-kicker">Command Mode</span><h2 id="command-mode-title">Ask about selected text</h2><p>Run a private FlowerWhisp Transform, or explicitly send the selection to Perplexity.</p></div><IconButton label="Close Command Mode" icon={X} onClick={onClose} /></div><div className="command-mode-grid"><label><span>Selected text</span><textarea value={state.sourceText} readOnly rows={7} placeholder="Select text in another app, then trigger Command Mode." /></label><label><span>{resultText ? 'Transform result' : 'What should happen?'}</span>{resultText ? <textarea value={resultText} onChange={(event) => setResultText(event.target.value)} rows={7} /> : <textarea value={instructions} onChange={(event) => setInstructions(event.target.value)} rows={7} placeholder="Polish this, explain it, make it concise…" autoFocus />}</label></div>{error ? <p className="command-mode-error" role="alert">{error}</p> : null}<div className="form-actions">{resultText ? <><Button variant="primary" icon={Check} onClick={() => void apply()}>Apply at selection</Button><Button variant="secondary" onClick={() => setResultText('')}>Back</Button></> : <><Button variant="primary" icon={Sparkle} onClick={() => void run()} disabled={busy || !state.sourceText.trim() || !instructions.trim()}>{busy ? 'Running…' : 'Ask Flow'}</Button><Button variant="secondary" onClick={() => void askPerplexity()} disabled={!state.sourceText.trim() || !instructions.trim()}>Ask Perplexity</Button></>}<Button variant="quiet" onClick={onClose}>Close</Button></div></section></div>
 }
 
+const OverlayErrorNotice = ({ message, onDismiss }: { message: string; onDismiss: () => void }) => (
+  <div className="overlay-root overlay-error-root" role="alert" aria-live="assertive">
+    <section className="overlay-error-popover" aria-labelledby="overlay-error-title" title={message}>
+      <div className="overlay-error-copy">
+        <strong id="overlay-error-title">Transcription error</strong>
+        <p>{message}</p>
+        <span>You can retry this transcript in the app.</span>
+      </div>
+      <button className="overlay-error-dismiss" type="button" aria-label="Dismiss transcription error" onClick={onDismiss}>
+        <svg className="overlay-error-countdown" viewBox="0 0 32 32" aria-hidden="true">
+          <circle className="overlay-error-countdown-track" cx="16" cy="16" r="13" pathLength="1" />
+          <circle className="overlay-error-countdown-progress" cx="16" cy="16" r="13" pathLength="1" />
+        </svg>
+        <X size={12} weight="bold" aria-hidden="true" />
+      </button>
+    </section>
+  </div>
+)
+
 const OverlayPill = ({ overlay }: { overlay: OverlayState }) => {
   const busy = ['starting', 'recording', 'stopping', 'transcribing', 'processing', 'inserting'].includes(overlay.phase)
   const recording = overlay.phase === 'recording'
@@ -1308,9 +1327,13 @@ const OverlayPill = ({ overlay }: { overlay: OverlayState }) => {
     ? Math.max(overlay.elapsedMs, clockNow - timerStart.current.startedAt)
     : overlay.elapsedMs
 
+  if (error) {
+    const errorMessage = overlay.error?.trim() || overlay.message?.trim() || 'The transcription failed.'
+    return <OverlayErrorNotice key={errorMessage} message={errorMessage} onDismiss={() => void api.dictation.cancel()} />
+  }
   if (resting) return <div className="overlay-root is-resting"><button className="overlay-idle-mark" type="button" aria-label="Start dictation" onPointerEnter={() => api.pill.setHovered(true)} onPointerLeave={() => api.pill.setHovered(false)} onClick={() => void api.dictation.start({ mode: 'toggle' })}><Microphone size={15} weight="fill" /><span>Start dictation</span></button></div>
   const stateLabel = `${phaseLabel[overlay.phase]}${overlay.message ? `: ${overlay.message}` : ''}`
-  return <div className={`overlay-root ${busy ? 'is-busy' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`}><div className={`overlay-pill ${recording ? 'is-recording' : ''} ${processing ? 'is-processing' : ''} ${ready ? 'is-ready' : ''} ${error ? 'is-error' : ''}`} aria-label={stateLabel} aria-live="polite" data-phase={overlay.phase}><span className="sr-only">{stateLabel}</span><div className="overlay-copy"><div className="overlay-state"><span className={`overlay-dot ${busy ? 'is-live' : ''}`} /><span className="overlay-label">{phaseLabel[overlay.phase]}</span><span className="overlay-mode">{overlay.mode === 'hold' ? 'hold' : 'toggle'}</span><span className="overlay-time">{formatDuration(liveElapsedMs)}</span></div><p>{overlay.message}</p></div>{cancelable ? <IconButton label="Cancel dictation" icon={X} onClick={() => void api.dictation.cancel()} /> : null}{recording ? <PillGraph level={overlay.level} elapsedMs={liveElapsedMs} /> : null}{processing ? <span className="overlay-processing" aria-label="Processing" /> : null}{recording && overlay.mode === 'toggle' ? <IconButton label="Finish dictation" icon={Check} onClick={() => void api.dictation.stop()} /> : null}{error ? <IconButton label="Dismiss error" icon={X} onClick={() => void api.dictation.cancel()} /> : null}</div></div>
+  return <div className={`overlay-root ${busy ? 'is-busy' : ''} ${ready ? 'is-ready' : ''}`}><div className={`overlay-pill ${recording ? 'is-recording' : ''} ${processing ? 'is-processing' : ''} ${ready ? 'is-ready' : ''}`} aria-label={stateLabel} aria-live="polite" data-phase={overlay.phase}><span className="sr-only">{stateLabel}</span><div className="overlay-copy"><div className="overlay-state"><span className={`overlay-dot ${busy ? 'is-live' : ''}`} /><span className="overlay-label">{phaseLabel[overlay.phase]}</span><span className="overlay-mode">{overlay.mode === 'hold' ? 'hold' : 'toggle'}</span><span className="overlay-time">{formatDuration(liveElapsedMs)}</span></div><p>{overlay.message}</p></div>{cancelable ? <IconButton label="Cancel dictation" icon={X} onClick={() => void api.dictation.cancel()} /> : null}{recording ? <PillGraph level={overlay.level} elapsedMs={liveElapsedMs} /> : null}{processing ? <span className="overlay-processing" aria-label="Processing" /> : null}{recording && overlay.mode === 'toggle' ? <IconButton label="Finish dictation" icon={Check} onClick={() => void api.dictation.stop()} /> : null}</div></div>
 }
 
 export function App() {
