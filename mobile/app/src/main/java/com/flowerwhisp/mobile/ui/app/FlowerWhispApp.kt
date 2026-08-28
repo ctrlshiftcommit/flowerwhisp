@@ -2,11 +2,16 @@ package com.flowerwhisp.mobile.ui.app
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -15,7 +20,6 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -32,6 +36,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -41,7 +46,6 @@ import androidx.compose.material.icons.automirrored.outlined.LibraryBooks
 import androidx.compose.material.icons.automirrored.outlined.TextSnippet
 import androidx.compose.material.icons.outlined.AccessibilityNew
 import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.AutoFixHigh
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -71,13 +75,10 @@ import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material.icons.outlined.Widgets
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -90,6 +91,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.painterResource
@@ -118,6 +121,7 @@ import com.flowerwhisp.mobile.R
 import com.flowerwhisp.mobile.ui.bubble.FlowerWhispBubble
 import com.flowerwhisp.mobile.ui.components.ActionRow
 import com.flowerwhisp.mobile.ui.components.FeatureSurface
+import com.flowerwhisp.mobile.ui.components.FlowerWhispTextField
 import com.flowerwhisp.mobile.ui.components.MinimumIconButton
 import com.flowerwhisp.mobile.ui.components.PrimaryAction
 import com.flowerwhisp.mobile.ui.components.RowDivider
@@ -128,7 +132,6 @@ import com.flowerwhisp.mobile.ui.components.SelectRow
 import com.flowerwhisp.mobile.ui.components.SwitchRow
 import com.flowerwhisp.mobile.ui.theme.Error
 import com.flowerwhisp.mobile.ui.theme.Clay
-import com.flowerwhisp.mobile.ui.theme.ClayStrong
 import com.flowerwhisp.mobile.ui.theme.FlowerWhispTheme
 import com.flowerwhisp.mobile.ui.theme.Ink
 import com.flowerwhisp.mobile.ui.theme.MutedText
@@ -594,20 +597,7 @@ private fun DictationScreen(uiState: FlowerWhispUiState, actions: FlowerWhispAct
                 }
                 Text(if (repair == null) "LIVE" else "SETUP", style = MaterialTheme.typography.labelMedium, color = if (repair == null) Clay else Warning)
             }
-            Box(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp), contentAlignment = Alignment.Center) {
-                val state = if (uiState.bubbleState is BubbleState.Hidden) BubbleState.Ready else uiState.bubbleState
-                FlowerWhispBubble(
-                    state = state,
-                    elapsedSeconds = uiState.elapsedSeconds,
-                    onStart = actions.onStart,
-                    onFinish = actions.onFinish,
-                    onCancel = actions.onCancel,
-                    onRetry = actions.onRetry,
-                    onCopy = actions.onCopy,
-                    onOpenApp = actions.onOpenApp,
-                    reduceMotion = uiState.settings.reduceMotion,
-                )
-            }
+            DictationInstrument(uiState, actions)
             if (repair != null) {
                 PrimaryAction(repair.label, repair.icon, onClick = repair.action(actions))
             } else {
@@ -648,6 +638,91 @@ private fun DictationScreen(uiState: FlowerWhispUiState, actions: FlowerWhispAct
             PrimaryAction("Wake bubble", Icons.Outlined.CheckCircle, onClick = actions.onWake)
         } else {
             SecondaryAction("Snooze bubble", Icons.Outlined.Snooze, onClick = actions.onSnooze)
+        }
+    }
+}
+
+@Composable
+private fun DictationInstrument(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
+    val state = if (uiState.bubbleState is BubbleState.Hidden) BubbleState.Ready else uiState.bubbleState
+    val transition = rememberInfiniteTransition(label = "dictation-instrument")
+    val rotation by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(9_000, easing = androidx.compose.animation.core.LinearEasing), RepeatMode.Restart),
+        label = "instrument-rotation",
+    )
+    val pulse by transition.animateFloat(
+        initialValue = 0.94f,
+        targetValue = 1.06f,
+        animationSpec = infiniteRepeatable(tween(1_800), RepeatMode.Reverse),
+        label = "instrument-pulse",
+    )
+    val animate = !uiState.settings.reduceMotion
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(214.dp)
+            .padding(top = 8.dp, bottom = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(198.dp)) {
+            val center = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
+            val radius = size.minDimension * 0.43f
+            val ringColor = when (state) {
+                is BubbleState.Recording -> Clay
+                is BubbleState.Success -> Resolved
+                is BubbleState.AccessibilityError, is BubbleState.ServiceError -> Error
+                else -> Outline
+            }
+            drawCircle(ringColor.copy(alpha = 0.28f), radius = radius, style = Stroke(1.5.dp.toPx()))
+            drawArc(
+                color = ringColor.copy(alpha = 0.88f),
+                startAngle = if (animate) rotation else -35f,
+                sweepAngle = if (state is BubbleState.Recording) 112f else 68f,
+                useCenter = false,
+                topLeft = androidx.compose.ui.geometry.Offset(center.x - radius, center.y - radius),
+                size = androidx.compose.ui.geometry.Size(radius * 2f, radius * 2f),
+                style = Stroke(2.5.dp.toPx(), cap = StrokeCap.Round),
+            )
+            val petalLength = radius * 0.2f * if (animate) pulse else 1f
+            repeat(8) { index ->
+                val angle = Math.toRadians(index * 45.0)
+                val start = androidx.compose.ui.geometry.Offset(
+                    center.x + kotlin.math.cos(angle).toFloat() * (radius * 0.82f),
+                    center.y + kotlin.math.sin(angle).toFloat() * (radius * 0.82f),
+                )
+                val end = androidx.compose.ui.geometry.Offset(
+                    center.x + kotlin.math.cos(angle).toFloat() * (radius * 0.82f + petalLength),
+                    center.y + kotlin.math.sin(angle).toFloat() * (radius * 0.82f + petalLength),
+                )
+                drawLine(ringColor.copy(alpha = if (index % 2 == 0) 0.56f else 0.26f), start, end, 1.5.dp.toPx(), StrokeCap.Round)
+            }
+        }
+        Surface(
+            color = SurfaceElevated,
+            shape = CircleShape,
+            border = BorderStroke(1.dp, Outline),
+            modifier = Modifier.size(112.dp),
+        ) {
+            Image(
+                painter = painterResource(R.drawable.flowerwhisp_logo),
+                contentDescription = "FlowerWhisp logo",
+                modifier = Modifier.padding(14.dp),
+            )
+        }
+        Box(Modifier.align(Alignment.BottomCenter)) {
+            FlowerWhispBubble(
+                state = state,
+                elapsedSeconds = uiState.elapsedSeconds,
+                onStart = actions.onStart,
+                onFinish = actions.onFinish,
+                onCancel = actions.onCancel,
+                onRetry = actions.onRetry,
+                onCopy = actions.onCopy,
+                onOpenApp = actions.onOpenApp,
+                reduceMotion = uiState.settings.reduceMotion,
+            )
         }
     }
 }
@@ -778,14 +853,13 @@ private fun HistoryScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActio
     }
     ScreenColumn("history-screen") {
         ScreenHeader("History", "Raw speech, refined text, and processing outcome")
-        OutlinedTextField(
+        FlowerWhispTextField(
             value = uiState.historyQuery,
             onValueChange = actions.onSearchHistory,
             modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("history-search"),
-            label = { Text("Search history") },
-            leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+            label = "Search history",
+            leadingContent = { Icon(Icons.Outlined.Search, contentDescription = null, tint = SecondaryText) },
             singleLine = true,
-            colors = fieldColors(),
         )
         when {
             uiState.historyLoading -> StatusPanel(Icons.Outlined.History, "Loading history", "Your saved dictations are being loaded.")
@@ -969,9 +1043,9 @@ private fun DictionaryEditorDialog(
         title = { Text(if (initial == null) "Add dictionary word" else "Edit dictionary word") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(spelling, { spelling = it }, label = { Text("Correct spelling") }, singleLine = true)
-                OutlinedTextField(context, { context = it }, label = { Text("Pronunciation or context") })
-                OutlinedTextField(replacement, { replacement = it }, label = { Text("Optional replacement") })
+                FlowerWhispTextField(spelling, { spelling = it }, label = "Correct spelling", singleLine = true)
+                FlowerWhispTextField(context, { context = it }, label = "Pronunciation or context")
+                FlowerWhispTextField(replacement, { replacement = it }, label = "Optional replacement")
             }
         },
         confirmButton = {
@@ -1007,8 +1081,8 @@ private fun SnippetEditorDialog(
         title = { Text(if (initial == null) "Add snippet" else "Edit snippet") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(trigger, { trigger = it }, label = { Text("Spoken trigger") }, singleLine = true)
-                OutlinedTextField(expansion, { expansion = it }, label = { Text("Expanded text") }, minLines = 3)
+                FlowerWhispTextField(trigger, { trigger = it }, label = "Spoken trigger", singleLine = true)
+                FlowerWhispTextField(expansion, { expansion = it }, label = "Expanded text", minLines = 3)
             }
         },
         confirmButton = {
@@ -1082,7 +1156,7 @@ private fun SettingsScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActi
         RowDivider()
         SwitchRow("Reduce motion", "Use immediate state changes without scale animation.", uiState.settings.reduceMotion, actions.onReduceMotionChanged)
 
-        SectionTitle("Provider key")
+        SectionTitle("Provider key", "Optional cloud transcription and refinement")
         SwitchRow(
             "Mock development mode",
             "Use deterministic local sample output. Turn this off to send audio and refinement requests to Groq.",
@@ -1091,14 +1165,14 @@ private fun SettingsScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActi
         )
         RowDivider()
         Text(if (uiState.groqApiKeyConfigured) "A Groq API key is saved securely." else "No Groq API key is saved.", color = SecondaryText, style = MaterialTheme.typography.bodyMedium)
-        OutlinedTextField(
+        Text("Stored encrypted on this device. It is used only when mock development mode is off.", color = MutedText, style = MaterialTheme.typography.bodyMedium)
+        FlowerWhispTextField(
             value = apiKey,
             onValueChange = { apiKey = it },
-            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-            label = { Text("Groq API key") },
+            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("groq-api-key"),
+            label = "Groq API key",
             visualTransformation = PasswordVisualTransformation(),
             singleLine = true,
-            colors = fieldColors(),
         )
         PrimaryAction("Save API key", Icons.Outlined.Lock, enabled = apiKey.isNotBlank()) {
             actions.onSaveApiKey(apiKey.trim())
@@ -1107,13 +1181,12 @@ private fun SettingsScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActi
         if (uiState.groqApiKeyConfigured) SecondaryAction("Clear saved key", Icons.Outlined.DeleteOutline, actions.onClearApiKey)
 
         SectionTitle("Refinement prompt")
-        OutlinedTextField(
+        FlowerWhispTextField(
             value = uiState.refinementPromptDraft,
             onValueChange = actions.onRefinementPromptChanged,
             modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp),
-            label = { Text("Instructions") },
+            label = "Instructions",
             minLines = 5,
-            colors = fieldColors(),
         )
 
         SectionTitle("Privacy")
@@ -1163,19 +1236,6 @@ private fun StatusPanel(icon: ImageVector, title: String, description: String, t
         Text(description, color = SecondaryText, style = MaterialTheme.typography.bodyMedium)
     }
 }
-
-@Composable
-private fun fieldColors() = OutlinedTextFieldDefaults.colors(
-    focusedTextColor = PrimaryText,
-    unfocusedTextColor = PrimaryText,
-    focusedBorderColor = Clay,
-    unfocusedBorderColor = Outline,
-    focusedLabelColor = Clay,
-    unfocusedLabelColor = SecondaryText,
-    cursorColor = Clay,
-    focusedContainerColor = SurfaceInk,
-    unfocusedContainerColor = SurfaceInk,
-)
 
 private fun formatDate(epochMs: Long): String = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(epochMs))
 

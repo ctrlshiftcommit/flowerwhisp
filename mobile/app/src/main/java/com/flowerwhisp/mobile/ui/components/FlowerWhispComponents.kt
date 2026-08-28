@@ -1,8 +1,13 @@
 package com.flowerwhisp.mobile.ui.components
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -13,6 +18,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChevronRight
@@ -25,14 +32,18 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.flowerwhisp.mobile.ui.theme.Clay
 import com.flowerwhisp.mobile.ui.theme.Ink
@@ -71,6 +82,75 @@ fun SectionTitle(title: String, supporting: String? = null) {
         Text(title, style = MaterialTheme.typography.labelLarge, color = PrimaryText)
         if (supporting != null) Text(supporting, style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
     }
+}
+
+@Composable
+fun FlowerWhispTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    singleLine: Boolean = false,
+    minLines: Int = 1,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
+    leadingContent: (@Composable (() -> Unit))? = null,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedAsState()
+    val shape = RoundedCornerShape(10.dp)
+    val floatingLabel = focused || value.isNotEmpty()
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = if (singleLine) 56.dp else 112.dp)
+            .background(SurfaceInk, shape)
+            .border(
+                BorderStroke(if (focused) 1.5.dp else 1.dp, if (focused) Clay else Outline),
+                shape,
+            ),
+        textStyle = MaterialTheme.typography.bodyLarge.copy(color = PrimaryText),
+        cursorBrush = SolidColor(Clay),
+        visualTransformation = visualTransformation,
+        interactionSource = interactionSource,
+        singleLine = singleLine,
+        minLines = minLines,
+        keyboardOptions = KeyboardOptions.Default,
+        decorationBox = { innerTextField ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = if (singleLine) Alignment.CenterVertically else Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (leadingContent != null) {
+                    Box(Modifier.size(26.dp), contentAlignment = Alignment.Center) {
+                        leadingContent()
+                    }
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    if (floatingLabel) {
+                        Text(label, style = MaterialTheme.typography.labelMedium, color = if (focused) Clay else SecondaryText)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = if (floatingLabel) 1.dp else 5.dp),
+                    ) {
+                        if (!floatingLabel && value.isEmpty()) {
+                            Text(label, style = MaterialTheme.typography.bodyLarge, color = SecondaryText)
+                        }
+                        innerTextField()
+                    }
+                }
+            }
+        },
+    )
 }
 
 @Composable

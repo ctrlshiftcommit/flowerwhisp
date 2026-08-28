@@ -40,10 +40,9 @@ internal class BubbleOverlayView(
         typeface = android.graphics.Typeface.create("sans", android.graphics.Typeface.NORMAL)
         textSize = density * 13f
     }
-    private val smallText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = android.graphics.Typeface.create("sans", android.graphics.Typeface.NORMAL)
-        textSize = density * 11f
-    }
+    private val bubbleRect = RectF()
+    private val readyMark = RectF()
+    private val stopMark = RectF()
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private var downRawX = 0f
     private var downRawY = 0f
@@ -144,7 +143,8 @@ internal class BubbleOverlayView(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val inset = density * (1.5f + (1f - bubbleScale) * 8f)
-        val rect = RectF(inset, inset, width - inset, height - inset)
+        bubbleRect.set(inset, inset, width - inset, height - inset)
+        val rect = bubbleRect
         val radius = min(rect.height() / 2f, density * 22f)
         fill.color = SURFACE
         fill.alpha = (255 * bubbleOpacity).toInt()
@@ -172,8 +172,8 @@ internal class BubbleOverlayView(
         val cy = height / 2f
         line.color = CLAY
         line.alpha = (255 * bubbleOpacity).toInt()
-        val mark = RectF(cx - 10f * density, cy - 15f * density, cx + 10f * density, cy + 7f * density)
-        canvas.drawArc(mark, 0f, 180f, false, line)
+        readyMark.set(cx - 10f * density, cy - 15f * density, cx + 10f * density, cy + 7f * density)
+        canvas.drawArc(readyMark, 0f, 180f, false, line)
         canvas.drawLine(cx, cy + 7f * density, cx, cy + 15f * density, line)
         canvas.drawLine(cx - 8f * density, cy + 15f * density, cx + 8f * density, cy + 15f * density, line)
     }
@@ -193,12 +193,8 @@ internal class BubbleOverlayView(
         text.alpha = (255 * bubbleOpacity).toInt()
         canvas.drawText(formatElapsed((SystemClock.elapsedRealtime() - state.startedAtElapsedMs).coerceAtLeast(0L) / 1_000L), 67f * density, centerY + 4f * density, text)
         line.color = PRIMARY
-        canvas.drawRoundRect(
-            RectF(width - 41f * density, centerY - 7f * density, width - 27f * density, centerY + 7f * density),
-            3f * density,
-            3f * density,
-            line,
-        )
+        stopMark.set(width - 41f * density, centerY - 7f * density, width - 27f * density, centerY + 7f * density)
+        canvas.drawRoundRect(stopMark, 3f * density, 3f * density, line)
         canvas.drawLine(width - 18f * density, centerY - 7f * density, width - 7f * density, centerY + 7f * density, line)
         canvas.drawLine(width - 7f * density, centerY - 7f * density, width - 18f * density, centerY + 7f * density, line)
     }
@@ -260,7 +256,6 @@ internal class BubbleOverlayView(
     }
 
     private companion object {
-        const val INK = 0xFF0C0B0A.toInt()
         const val SURFACE = 0xFF201D19.toInt()
         const val OUTLINE = 0xFF3A342D.toInt()
         const val PRIMARY = 0xFFF5F0E7.toInt()

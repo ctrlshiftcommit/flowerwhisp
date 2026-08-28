@@ -10,9 +10,9 @@ This audit covers the onboarding and permission journey, the primary dictation s
 
 - The mobile module is a Kotlin/Jetpack Compose Android app under `mobile/`.
 - The baseline `:app:testDebugUnitTest`, `:app:lintDebug`, and `:app:assembleDebug` gates pass with the Android Studio JDK 17 runtime.
-- The current source exposes Home, History, Library, and Settings only. There is no Insights destination and no dedicated dictation-oriented composition.
-- Onboarding is a nine-step linear sequence with separate bubble, overlay, accessibility, microphone, tap, hold, and real-test screens. Special access and runtime permission states are not composed as one recoverable checklist.
-- The Compose layer uses shared Material 3 cards, buttons, navigation components, and raw accent constants. The overlay Canvas has a separate hardcoded color language and a fixed compact shape, so the in-app bubble and always-on-top bubble do not read as one product.
+- Before this redesign, the source exposed Home, History, Library, and Settings only. There was no Insights destination and no dedicated dictation-oriented composition.
+- Before this redesign, onboarding was a nine-step linear sequence with separate bubble, overlay, accessibility, microphone, tap, hold, and real-test screens. Special access and runtime permission states were not composed as one recoverable checklist.
+- Before this redesign, the Compose layer used shared Material 3 cards, buttons, navigation components, and raw accent constants. The overlay Canvas had a separate hardcoded color language and a fixed compact shape, so the in-app bubble and always-on-top bubble did not read as one product.
 - No Android device or emulator was available during the baseline inspection, so incumbent and final screenshot evidence must be captured when a target becomes available.
 
 ## Findings
@@ -85,7 +85,7 @@ The generated logo explorations were rejected. The desktop app already has an es
 
 | Surface | User job | Visual anchor |
 | --- | --- | --- |
-| Welcome | Understand the promise and begin | pencil-line mark, one sentence, one CTA |
+| Welcome | Understand the promise and begin | shared desktop mark, one sentence, one CTA |
 | Access | Make the bubble and insertion path available | live capability checklist |
 | Microphone | Grant recording access with context | plain-language explanation and explicit action |
 | Test | Complete the first successful dictation | oversized instrument and one recovery-safe result |
