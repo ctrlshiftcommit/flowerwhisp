@@ -278,8 +278,11 @@ const startElapsedTicker = (): void => {
   }, 100)
 }
 
+const isRestingOverlayPhase = (phase: DictationPhase): boolean => ['idle', 'success', 'cancelled'].includes(phase)
+
 const publishOverlay = (patch: Partial<OverlayState>): void => {
   overlayState = { ...overlayState, ...patch }
+  if (!isRestingOverlayPhase(overlayState.phase)) pillHovered = false
   send('dictation:state', overlayState)
   send('overlay:state', overlayState)
   if (tray) tray.setToolTip(`FlowerWhisp — ${overlayState.phase === 'idle' ? 'Ready' : overlayState.phase}`)
@@ -292,7 +295,7 @@ const advance = (phase: DictationPhase, patch: Partial<OverlayState> = {}): void
 }
 
 const overlaySize = (): { width: number; height: number } => {
-  if (['idle', 'success', 'cancelled'].includes(overlayState.phase)) return pillHovered ? { width: 116, height: 32 } : { width: 46, height: 22 }
+  if (isRestingOverlayPhase(overlayState.phase)) return pillHovered ? { width: 116, height: 32 } : { width: 46, height: 22 }
   if (overlayState.phase === 'recording') return { width: 104, height: 38 }
   if (overlayState.phase === 'error') return { width: 34, height: 34 }
   if (overlayState.phase === 'ready') return { width: 70, height: 36 }
@@ -2085,6 +2088,7 @@ const saveSettings = async (patch: Partial<PublicSettings>): Promise<CommandResu
   }
   if (patch.showPill !== undefined) {
     pillEnabled = patch.showPill
+    if (!pillEnabled) pillHovered = false
     if (pillEnabled) showOverlay()
     else overlayWindow?.hide()
   }
@@ -2259,7 +2263,7 @@ const registerIpc = (): void => {
     hideOverlay(1500)
   })
   ipcMain.on('pill:hovered', (event, hovered: unknown) => {
-    if (!isTrustedSender(event) || event.sender.id !== overlayWindow?.webContents.id || typeof hovered !== 'boolean') return
+    if (!isTrustedSender(event) || event.sender.id !== overlayWindow?.webContents.id || typeof hovered !== 'boolean' || !isRestingOverlayPhase(overlayState.phase)) return
     pillHovered = hovered
     syncOverlayGeometry()
   })
