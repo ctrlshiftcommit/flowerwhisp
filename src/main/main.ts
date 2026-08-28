@@ -1892,7 +1892,9 @@ const stopSession = async (): Promise<CommandResult> => {
 
 const cancelSession = async (): Promise<CommandResult> => {
   if (overlayState.phase === 'error') {
-    if (activeSession) mainWindow?.webContents.send('recording:cancel', { sessionId: activeSession.id })
+    if (activeSession && ['starting', 'recording'].includes(activeSession.phase)) {
+      mainWindow?.webContents.send('recording:cancel', { sessionId: activeSession.id })
+    }
     stopElapsedTicker()
     activeSession = null
     hideOverlay()
