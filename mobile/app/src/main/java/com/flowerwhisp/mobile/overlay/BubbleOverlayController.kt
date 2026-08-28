@@ -53,7 +53,10 @@ class BubbleOverlayController(
 
     fun render(state: BubbleState) {
         renderedState = state
-        view?.bubbleState = state
+        view?.let { attached ->
+            attached.bubbleState = state
+            resizeForState(attached)
+        }
     }
 
     fun applyAppearance(settings: AppSettings) {
@@ -112,8 +115,8 @@ class BubbleOverlayController(
             it.bubbleOpacity = bubbleOpacity
         }
         val params = WindowManager.LayoutParams(
-            hitTargetPx,
-            hitTargetPx,
+            bubbleView.desiredWidthPx().coerceAtLeast(hitTargetPx),
+            bubbleView.desiredHeightPx().coerceAtLeast(hitTargetPx),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
@@ -155,8 +158,8 @@ class BubbleOverlayController(
     private fun moveBy(deltaX: Int, deltaY: Int) {
         val params = layoutParams ?: return
         val safe = safeBounds()
-        params.x = (params.x + deltaX).coerceIn(safe.left, max(safe.left, safe.right - hitTargetPx))
-        params.y = (params.y + deltaY).coerceIn(safe.top, max(safe.top, safe.bottom - hitTargetPx))
+        params.x = (params.x + deltaX).coerceIn(safe.left, max(safe.left, safe.right - params.width))
+        params.y = (params.y + deltaY).coerceIn(safe.top, max(safe.top, safe.bottom - params.height))
         updateLayout("drag")
     }
 
@@ -164,10 +167,10 @@ class BubbleOverlayController(
         val params = layoutParams ?: return
         val safe = safeBounds()
         val left = safe.left
-        val right = max(left, safe.right - hitTargetPx)
-        snappedRight = params.x + hitTargetPx / 2 >= safe.centerX()
+        val right = max(left, safe.right - params.width)
+        snappedRight = params.x + params.width / 2 >= safe.centerX()
         params.x = if (snappedRight) right else left
-        val verticalRange = max(1, safe.height() - hitTargetPx)
+        val verticalRange = max(1, safe.height() - params.height)
         verticalFraction = ((params.y - safe.top).toFloat() / verticalRange).coerceIn(0f, 1f)
         updateLayout("edge snap")
         positionStore?.let { store ->
@@ -185,10 +188,21 @@ class BubbleOverlayController(
     }
 
     private fun position(params: WindowManager.LayoutParams, safe: Rect) {
-        val right = max(safe.left, safe.right - hitTargetPx)
+        val right = max(safe.left, safe.right - params.width)
         params.x = if (snappedRight) right else safe.left
-        val verticalRange = max(0, safe.height() - hitTargetPx)
+        val verticalRange = max(0, safe.height() - params.height)
         params.y = safe.top + (verticalRange * verticalFraction).toInt()
+    }
+
+    private fun resizeForState(attached: BubbleOverlayView) {
+        val params = layoutParams ?: return
+        val safe = safeBounds()
+        params.width = attached.desiredWidthPx().coerceAtLeast(hitTargetPx)
+        params.height = attached.desiredHeightPx().coerceAtLeast(hitTargetPx)
+        params.x = if (snappedRight) max(safe.left, safe.right - params.width) else safe.left
+        val verticalRange = max(0, safe.height() - params.height)
+        params.y = (safe.top + verticalRange * verticalFraction).toInt()
+        updateLayout("resize")
     }
 
     private fun safeBounds(): Rect {

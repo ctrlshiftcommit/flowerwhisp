@@ -48,6 +48,7 @@ class MainViewModel(
                 mutableUiState.update {
                     it.copy(
                         onboardingComplete = settings.onboardingComplete,
+                        onboardingStep = OnboardingStep.entries.getOrElse(settings.onboardingStep.coerceIn(0, OnboardingStep.entries.lastIndex)) { OnboardingStep.WELCOME },
                         settings = settings,
                         refinementPromptDraft = settings.refinementPrompt,
                         groqApiKeyConfigured = container.settingsRepository.hasGroqApiKey(),
@@ -98,11 +99,18 @@ class MainViewModel(
     }
 
     fun navigate(destination: FlowerWhispDestination) = updateUi { copy(destination = destination) }
-    fun advanceOnboarding(step: OnboardingStep) = updateUi { copy(onboardingStep = step) }
+    fun advanceOnboarding(step: OnboardingStep) {
+        updateUi { copy(onboardingStep = step) }
+        updateSettings { it.copy(onboardingStep = step.ordinal) }
+    }
     fun selectLibrary(section: LibrarySection) = updateUi { copy(librarySection = section) }
     fun searchHistory(query: String) = updateUi { copy(historyQuery = query) }
 
-    fun completeOnboarding() = updateSettings { it.copy(onboardingComplete = true) }
+    fun completeOnboarding() = updateSettings {
+        it.copy(onboardingComplete = true, onboardingStep = OnboardingStep.READY.ordinal)
+    }
+
+    fun skipOnboarding() = completeOnboarding()
 
     fun startDictation() {
         val failure = DictationService.startFromVisibleInAppAction(application)

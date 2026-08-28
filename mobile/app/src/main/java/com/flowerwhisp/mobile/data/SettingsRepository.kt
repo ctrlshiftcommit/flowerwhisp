@@ -11,6 +11,7 @@ import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.flowerwhisp.mobile.domain.model.AppSettings
@@ -38,6 +39,7 @@ private val Context.flowerWhispSettingsDataStore: DataStore<Preferences> by
 
 private object SettingsKeys {
     val onboardingComplete = booleanPreferencesKey("onboarding_complete")
+    val onboardingStep = intPreferencesKey("onboarding_step")
     val language = stringPreferencesKey("language")
     val writingStyle = stringPreferencesKey("writing_style")
     val autoPunctuation = booleanPreferencesKey("auto_punctuation")
@@ -61,6 +63,7 @@ private object SettingsKeys {
 
 internal fun Preferences.toAppSettings(): AppSettings = AppSettings(
     onboardingComplete = this[SettingsKeys.onboardingComplete] ?: false,
+    onboardingStep = this[SettingsKeys.onboardingStep] ?: 0,
     language = this[SettingsKeys.language].toStoredLanguageMode(),
     writingStyle = this[SettingsKeys.writingStyle].toWritingStyle(),
     autoPunctuation = this[SettingsKeys.autoPunctuation] ?: true,
@@ -85,6 +88,7 @@ internal fun Preferences.toAppSettings(): AppSettings = AppSettings(
 
 private fun MutablePreferences.applySettings(settings: AppSettings) {
     this[SettingsKeys.onboardingComplete] = settings.onboardingComplete
+    this[SettingsKeys.onboardingStep] = settings.onboardingStep.coerceIn(0, 4)
     this[SettingsKeys.language] = settings.language.name
     this[SettingsKeys.writingStyle] = settings.writingStyle.name
     this[SettingsKeys.autoPunctuation] = settings.autoPunctuation

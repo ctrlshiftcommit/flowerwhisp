@@ -52,6 +52,7 @@ class MainActivity : ComponentActivity() {
                     onNavigate = model::navigate,
                     onAdvanceOnboarding = model::advanceOnboarding,
                     onCompleteOnboarding = model::completeOnboarding,
+                    onSkipOnboarding = model::skipOnboarding,
                     onRequestAccessibility = ::openAccessibilitySettings,
                     onRequestOverlay = ::openOverlaySettings,
                     onRequestMicrophone = { microphonePermission.launch(Manifest.permission.RECORD_AUDIO) },

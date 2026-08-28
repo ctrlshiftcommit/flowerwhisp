@@ -19,6 +19,7 @@ enum class IdleBehavior { FULL, SHRINK }
 
 data class AppSettings(
     val onboardingComplete: Boolean = false,
+    val onboardingStep: Int = 0,
     val language: LanguageMode = LanguageMode.AUTO,
     val writingStyle: WritingStyle = WritingStyle.NATURAL,
     val autoPunctuation: Boolean = true,

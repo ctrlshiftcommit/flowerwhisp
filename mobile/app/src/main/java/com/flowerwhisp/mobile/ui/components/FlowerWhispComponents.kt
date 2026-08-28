@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -17,13 +16,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -38,12 +34,12 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.flowerwhisp.mobile.ui.theme.Mint
-import com.flowerwhisp.mobile.ui.theme.OLEDBlack
+import com.flowerwhisp.mobile.ui.theme.Clay
+import com.flowerwhisp.mobile.ui.theme.Ink
 import com.flowerwhisp.mobile.ui.theme.Outline
 import com.flowerwhisp.mobile.ui.theme.PrimaryText
 import com.flowerwhisp.mobile.ui.theme.SecondaryText
-import com.flowerwhisp.mobile.ui.theme.SurfaceBlack
+import com.flowerwhisp.mobile.ui.theme.SurfaceInk
 import com.flowerwhisp.mobile.ui.theme.SurfaceSelected
 
 @Composable
@@ -53,63 +49,77 @@ fun ScreenHeader(title: String, description: String? = null, trailing: (@Composa
         verticalAlignment = Alignment.Top,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(title, style = MaterialTheme.typography.headlineMedium, modifier = Modifier.semantics { heading() })
-            if (description != null) Text(description, style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
+            if (description != null) {
+                Text(description, style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
+            }
         }
         trailing?.invoke()
     }
 }
 
 @Composable
-fun SectionTitle(title: String) {
-    Text(
-        title,
-        style = MaterialTheme.typography.labelLarge,
-        color = SecondaryText,
+fun SectionTitle(title: String, supporting: String? = null) {
+    Column(
         modifier = Modifier
-            .padding(top = 12.dp, bottom = 4.dp)
+            .fillMaxWidth()
+            .padding(top = 16.dp, bottom = 4.dp)
             .semantics { heading() },
-    )
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Text(title, style = MaterialTheme.typography.labelLarge, color = PrimaryText)
+        if (supporting != null) Text(supporting, style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
+    }
 }
 
 @Composable
 fun PrimaryAction(label: String, icon: ImageVector? = null, enabled: Boolean = true, onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
-        enabled = enabled,
+    Surface(
+        color = if (enabled) Clay else SurfaceSelected,
+        contentColor = if (enabled) Ink else SecondaryText,
+        shape = RoundedCornerShape(14.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 52.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = Mint,
-            contentColor = OLEDBlack,
-            disabledContainerColor = SurfaceSelected,
-            disabledContentColor = SecondaryText,
-        ),
-        shape = RoundedCornerShape(16.dp),
+            .heightIn(min = 54.dp)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
     ) {
-        if (icon != null) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
-            Spacer(Modifier.width(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 15.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (icon != null) {
+                Icon(icon, contentDescription = null, modifier = Modifier.size(19.dp))
+                Spacer(Modifier.width(9.dp))
+            }
+            Text(label, fontWeight = FontWeight.Medium)
         }
-        Text(label)
     }
 }
 
 @Composable
 fun SecondaryAction(label: String, icon: ImageVector? = null, onClick: () -> Unit) {
-    OutlinedButton(
-        onClick = onClick,
-        modifier = Modifier.heightIn(min = 48.dp),
+    Surface(
+        color = Color.Transparent,
+        contentColor = PrimaryText,
+        modifier = Modifier
+            .heightIn(min = 48.dp)
+            .clickable(role = Role.Button, onClick = onClick),
         border = BorderStroke(1.dp, Outline),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = PrimaryText),
+        shape = RoundedCornerShape(14.dp),
     ) {
-        if (icon != null) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(8.dp))
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 13.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (icon != null) {
+                Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(label)
         }
-        Text(label)
     }
 }
 
@@ -121,11 +131,15 @@ fun FeatureSurface(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        color = if (selected) SurfaceSelected else SurfaceBlack,
-        shape = RoundedCornerShape(16.dp),
-        border = BorderStroke(1.dp, Outline),
+        color = if (selected) SurfaceSelected else SurfaceInk,
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.dp, if (selected) Clay.copy(alpha = 0.58f) else Outline),
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp), content = content)
+        Column(
+            Modifier.padding(horizontal = 18.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            content = content,
+        )
     }
 }
 
@@ -135,24 +149,30 @@ fun ActionRow(
     title: String,
     description: String? = null,
     value: String? = null,
-    tint: Color = Mint,
+    tint: Color = Clay,
     onClick: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .defaultMinSize(minHeight = 56.dp)
+            .defaultMinSize(minHeight = 64.dp)
             .clickable(role = Role.Button, onClick = onClick)
-            .padding(vertical = 8.dp),
+            .padding(vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(24.dp))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Surface(
+            color = tint.copy(alpha = 0.12f),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.size(42.dp),
+        ) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.padding(10.dp))
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
             if (description != null) Text(description, style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
         }
-        if (value != null) Text(value, style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
+        if (value != null) Text(value, style = MaterialTheme.typography.labelMedium, color = tint)
         Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = SecondaryText)
     }
 }
@@ -167,13 +187,13 @@ fun SwitchRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .defaultMinSize(minHeight = 56.dp)
+            .defaultMinSize(minHeight = 64.dp)
             .clickable(role = Role.Switch) { onCheckedChange(!checked) }
-            .padding(vertical = 8.dp),
+            .padding(vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
             if (description != null) Text(description, style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
         }
@@ -181,8 +201,8 @@ fun SwitchRow(
             checked = checked,
             onCheckedChange = onCheckedChange,
             colors = SwitchDefaults.colors(
-                checkedThumbColor = OLEDBlack,
-                checkedTrackColor = Mint,
+                checkedThumbColor = Ink,
+                checkedTrackColor = Clay,
                 uncheckedThumbColor = SecondaryText,
                 uncheckedTrackColor = SurfaceSelected,
                 uncheckedBorderColor = Outline,
@@ -195,25 +215,25 @@ fun SwitchRow(
 fun SelectRow(title: String, description: String? = null, selected: Boolean, onClick: () -> Unit) {
     Surface(
         color = if (selected) SurfaceSelected else Color.Transparent,
-        shape = RoundedCornerShape(12.dp),
-        border = if (selected) BorderStroke(1.dp, Mint) else null,
+        shape = RoundedCornerShape(14.dp),
+        border = if (selected) BorderStroke(1.dp, Clay.copy(alpha = 0.65f)) else null,
         modifier = Modifier
             .fillMaxWidth()
-            .defaultMinSize(minHeight = 52.dp)
+            .defaultMinSize(minHeight = 56.dp)
             .clickable(role = Role.RadioButton, onClick = onClick),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Surface(
                 shape = RoundedCornerShape(50),
-                color = if (selected) Mint else Color.Transparent,
-                border = BorderStroke(1.dp, if (selected) Mint else SecondaryText),
+                color = if (selected) Clay else Color.Transparent,
+                border = BorderStroke(1.dp, if (selected) Clay else SecondaryText),
                 modifier = Modifier.size(18.dp),
             ) {}
-            Column(Modifier.weight(1f)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(title, style = MaterialTheme.typography.bodyLarge)
                 if (description != null) Text(description, style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
             }
@@ -223,7 +243,7 @@ fun SelectRow(title: String, description: String? = null, selected: Boolean, onC
 
 @Composable
 fun RowDivider() {
-    HorizontalDivider(color = Outline, thickness = 1.dp)
+    HorizontalDivider(color = Outline.copy(alpha = 0.72f), thickness = 1.dp)
 }
 
 @Composable

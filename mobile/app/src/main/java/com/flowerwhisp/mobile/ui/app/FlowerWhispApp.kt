@@ -1,6 +1,14 @@
 package com.flowerwhisp.mobile.ui.app
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.asPaddingValues
@@ -9,6 +17,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -27,6 +36,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.LibraryBooks
 import androidx.compose.material.icons.automirrored.outlined.TextSnippet
 import androidx.compose.material.icons.outlined.AccessibilityNew
@@ -43,7 +53,7 @@ import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.FormatPaint
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Layers
@@ -65,17 +75,9 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
-import androidx.compose.material3.NavigationRail
-import androidx.compose.material3.NavigationRailItem
-import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -89,6 +91,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -108,6 +112,9 @@ import com.flowerwhisp.mobile.domain.model.IdleBehavior
 import com.flowerwhisp.mobile.domain.model.LanguageMode
 import com.flowerwhisp.mobile.domain.model.Snippet
 import com.flowerwhisp.mobile.domain.model.WritingStyle
+import com.flowerwhisp.mobile.domain.insights.InsightSnapshot
+import com.flowerwhisp.mobile.domain.insights.calculateInsights
+import com.flowerwhisp.mobile.R
 import com.flowerwhisp.mobile.ui.bubble.FlowerWhispBubble
 import com.flowerwhisp.mobile.ui.components.ActionRow
 import com.flowerwhisp.mobile.ui.components.FeatureSurface
@@ -120,14 +127,17 @@ import com.flowerwhisp.mobile.ui.components.SectionTitle
 import com.flowerwhisp.mobile.ui.components.SelectRow
 import com.flowerwhisp.mobile.ui.components.SwitchRow
 import com.flowerwhisp.mobile.ui.theme.Error
+import com.flowerwhisp.mobile.ui.theme.Clay
+import com.flowerwhisp.mobile.ui.theme.ClayStrong
 import com.flowerwhisp.mobile.ui.theme.FlowerWhispTheme
-import com.flowerwhisp.mobile.ui.theme.Mint
-import com.flowerwhisp.mobile.ui.theme.MintStrong
-import com.flowerwhisp.mobile.ui.theme.OLEDBlack
+import com.flowerwhisp.mobile.ui.theme.Ink
+import com.flowerwhisp.mobile.ui.theme.MutedText
 import com.flowerwhisp.mobile.ui.theme.Outline
 import com.flowerwhisp.mobile.ui.theme.PrimaryText
+import com.flowerwhisp.mobile.ui.theme.Resolved
 import com.flowerwhisp.mobile.ui.theme.SecondaryText
-import com.flowerwhisp.mobile.ui.theme.SurfaceBlack
+import com.flowerwhisp.mobile.ui.theme.SurfaceElevated
+import com.flowerwhisp.mobile.ui.theme.SurfaceInk
 import com.flowerwhisp.mobile.ui.theme.SurfaceSelected
 import com.flowerwhisp.mobile.ui.theme.Warning
 import java.text.DateFormat
@@ -136,7 +146,7 @@ import java.util.Date
 @Composable
 fun FlowerWhispApp(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
     FlowerWhispTheme {
-        Surface(modifier = Modifier.fillMaxSize(), color = OLEDBlack) {
+        Surface(modifier = Modifier.fillMaxSize(), color = Ink) {
             if (!uiState.onboardingComplete) {
                 OnboardingScreen(uiState, actions)
             } else {
@@ -150,31 +160,48 @@ fun FlowerWhispApp(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
 private fun AppShell(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 720.dp
-        if (wide) {
-            Row(Modifier.fillMaxSize()) {
-                DestinationRail(uiState.destination, actions.onNavigate)
-                HorizontalDivider(Modifier.fillMaxHeight().width(1.dp), color = Outline)
-                Scaffold(
-                    modifier = Modifier.weight(1f),
-                    containerColor = OLEDBlack,
-                    contentWindowInsets = WindowInsets.safeDrawing,
-                ) { padding -> DestinationContent(uiState, actions, Modifier.padding(padding)) }
+        Box(Modifier.fillMaxSize().padding(WindowInsets.safeDrawing.asPaddingValues())) {
+            if (wide) {
+                Row(Modifier.fillMaxSize()) {
+                    DestinationRail(uiState.destination, actions.onNavigate)
+                    HorizontalDivider(Modifier.fillMaxHeight().width(1.dp), color = Outline.copy(alpha = 0.72f))
+                    AnimatedDestinationContent(uiState, actions, Modifier.weight(1f))
+                }
+            } else {
+                Column(Modifier.fillMaxSize()) {
+                    AnimatedDestinationContent(uiState, actions, Modifier.weight(1f))
+                    DestinationBar(uiState.destination, actions.onNavigate)
+                }
             }
-        } else {
-            Scaffold(
-                containerColor = OLEDBlack,
-                contentWindowInsets = WindowInsets.safeDrawing,
-                bottomBar = { DestinationBar(uiState.destination, actions.onNavigate) },
-            ) { padding -> DestinationContent(uiState, actions, Modifier.padding(padding)) }
         }
     }
 }
 
 @Composable
-private fun DestinationContent(uiState: FlowerWhispUiState, actions: FlowerWhispActions, modifier: Modifier) {
+private fun AnimatedDestinationContent(uiState: FlowerWhispUiState, actions: FlowerWhispActions, modifier: Modifier) {
+    AnimatedContent(
+        targetState = uiState.destination,
+        transitionSpec = {
+            (fadeIn(tween(180)) togetherWith fadeOut(tween(120))).using(SizeTransform(clip = false))
+        },
+        modifier = modifier,
+        label = "destination-transition",
+    ) { destination ->
+        DestinationContent(destination, uiState, actions, Modifier.fillMaxSize())
+    }
+}
+
+@Composable
+private fun DestinationContent(
+    destination: FlowerWhispDestination,
+    uiState: FlowerWhispUiState,
+    actions: FlowerWhispActions,
+    modifier: Modifier,
+) {
     Box(modifier.fillMaxSize()) {
-        when (uiState.destination) {
-            FlowerWhispDestination.HOME -> HomeScreen(uiState, actions)
+        when (destination) {
+            FlowerWhispDestination.HOME -> DictationScreen(uiState, actions)
+            FlowerWhispDestination.INSIGHTS -> InsightsScreen(uiState)
             FlowerWhispDestination.HISTORY -> HistoryScreen(uiState, actions)
             FlowerWhispDestination.LIBRARY -> LibraryScreen(uiState, actions)
             FlowerWhispDestination.SETTINGS -> SettingsScreen(uiState, actions)
@@ -184,60 +211,102 @@ private fun DestinationContent(uiState: FlowerWhispUiState, actions: FlowerWhisp
 
 @Composable
 private fun DestinationBar(selected: FlowerWhispDestination, onNavigate: (FlowerWhispDestination) -> Unit) {
-    NavigationBar(containerColor = SurfaceBlack, contentColor = PrimaryText, tonalElevation = 0.dp) {
+    Surface(
+        color = SurfaceInk,
+        contentColor = PrimaryText,
+        border = BorderStroke(1.dp, Outline.copy(alpha = 0.72f)),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
         FlowerWhispDestination.entries.forEach { destination ->
-            NavigationBarItem(
-                selected = selected == destination,
-                onClick = { onNavigate(destination) },
-                icon = { Icon(destination.icon(), contentDescription = null) },
-                label = { Text(destination.label) },
-                modifier = Modifier.heightIn(min = 64.dp).testTag("nav-${destination.name.lowercase()}"),
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = Mint,
-                    selectedTextColor = PrimaryText,
-                    indicatorColor = SurfaceSelected,
-                    unselectedIconColor = SecondaryText,
-                    unselectedTextColor = SecondaryText,
-                ),
-            )
+            DestinationNavItem(destination, selected == destination, onNavigate)
+        }
         }
     }
 }
 
 @Composable
 private fun DestinationRail(selected: FlowerWhispDestination, onNavigate: (FlowerWhispDestination) -> Unit) {
-    NavigationRail(containerColor = SurfaceBlack, contentColor = PrimaryText, modifier = Modifier.width(96.dp)) {
-        Spacer(Modifier.height(16.dp))
-        FlowerWhispDestination.entries.forEach { destination ->
-            NavigationRailItem(
-                selected = selected == destination,
-                onClick = { onNavigate(destination) },
-                icon = { Icon(destination.icon(), contentDescription = null) },
-                label = { Text(destination.label) },
-                modifier = Modifier.heightIn(min = 64.dp).testTag("nav-${destination.name.lowercase()}"),
-                colors = NavigationRailItemDefaults.colors(
-                    selectedIconColor = Mint,
-                    selectedTextColor = PrimaryText,
-                    indicatorColor = SurfaceSelected,
-                    unselectedIconColor = SecondaryText,
-                    unselectedTextColor = SecondaryText,
-                ),
+    Surface(
+        color = SurfaceInk,
+        contentColor = PrimaryText,
+        modifier = Modifier.fillMaxHeight().width(112.dp),
+    ) {
+        Column(Modifier.fillMaxHeight().padding(horizontal = 10.dp, vertical = 14.dp)) {
+            Image(
+                painter = painterResource(R.drawable.flowerwhisp_logo),
+                contentDescription = "FlowerWhisp",
+                contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                modifier = Modifier.size(48.dp).align(Alignment.CenterHorizontally),
             )
+            Text(
+                "FLOWERWHISP",
+                style = MaterialTheme.typography.labelMedium,
+                color = SecondaryText,
+                modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 5.dp, bottom = 22.dp),
+            )
+        FlowerWhispDestination.entries.forEach { destination ->
+            DestinationRailItem(destination, selected == destination, onNavigate)
+        }
+            Spacer(Modifier.weight(1f))
+            Text("PRIVATE BY DEFAULT", style = MaterialTheme.typography.labelMedium, color = MutedText, modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp))
         }
     }
 }
 
+@Composable
+private fun RowScope.DestinationNavItem(destination: FlowerWhispDestination, selected: Boolean, onNavigate: (FlowerWhispDestination) -> Unit) {
+    Column(
+        modifier = Modifier
+            .weight(1f)
+            .heightIn(min = 64.dp)
+            .clickable(role = Role.Button) { onNavigate(destination) }
+            .testTag("nav-${destination.name.lowercase()}"),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .width(24.dp)
+                .height(3.dp)
+                .background(if (selected) Clay else Color.Transparent, RoundedCornerShape(50)),
+        )
+        Icon(destination.icon(), contentDescription = null, tint = if (selected) Clay else SecondaryText, modifier = Modifier.size(21.dp))
+        Text(destination.label, style = MaterialTheme.typography.labelMedium, color = if (selected) PrimaryText else SecondaryText, maxLines = 1)
+    }
+}
+
+@Composable
+private fun DestinationRailItem(destination: FlowerWhispDestination, selected: Boolean, onNavigate: (FlowerWhispDestination) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 58.dp)
+            .clickable(role = Role.Button) { onNavigate(destination) }
+            .background(if (selected) SurfaceSelected else Color.Transparent, RoundedCornerShape(14.dp))
+            .padding(horizontal = 10.dp, vertical = 9.dp)
+            .testTag("nav-${destination.name.lowercase()}"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        Icon(destination.icon(), contentDescription = null, tint = if (selected) Clay else SecondaryText, modifier = Modifier.size(21.dp))
+        Text(destination.label, style = MaterialTheme.typography.labelLarge, color = if (selected) PrimaryText else SecondaryText)
+    }
+}
+
 private fun FlowerWhispDestination.icon(): ImageVector = when (this) {
-    FlowerWhispDestination.HOME -> Icons.Outlined.Home
+    FlowerWhispDestination.HOME -> Icons.Outlined.GraphicEq
+    FlowerWhispDestination.INSIGHTS -> Icons.Outlined.Insights
     FlowerWhispDestination.HISTORY -> Icons.Outlined.History
-            FlowerWhispDestination.LIBRARY -> Icons.AutoMirrored.Outlined.LibraryBooks
+    FlowerWhispDestination.LIBRARY -> Icons.AutoMirrored.Outlined.LibraryBooks
     FlowerWhispDestination.SETTINGS -> Icons.Outlined.Settings
 }
 
 @Composable
 private fun OnboardingScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
     val step = uiState.onboardingStep
-    val details = onboardingDetails(step)
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
@@ -248,28 +317,50 @@ private fun OnboardingScreen(uiState: FlowerWhispUiState, actions: FlowerWhispAc
         Column(
             modifier = Modifier
                 .align(Alignment.Center)
-                .widthIn(max = 680.dp)
+                .widthIn(max = 560.dp)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = horizontal, vertical = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp),
+                .padding(horizontal = horizontal, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("FLOWERWHISP", style = MaterialTheme.typography.labelLarge, color = Mint)
-                LinearProgressIndicator(
-                    progress = { (step.ordinal + 1f) / OnboardingStep.entries.size },
-                    modifier = Modifier.fillMaxWidth().height(4.dp),
-                    color = Mint,
-                    trackColor = SurfaceSelected,
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(
+                    painter = painterResource(R.drawable.flowerwhisp_logo),
+                    contentDescription = "FlowerWhisp",
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                    modifier = Modifier.size(42.dp),
                 )
-                Text("${step.ordinal + 1} of ${OnboardingStep.entries.size}", style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
+                Text("FLOWERWHISP", style = MaterialTheme.typography.labelLarge, color = SecondaryText, modifier = Modifier.padding(start = 9.dp).weight(1f))
+                Text(
+                    "Skip setup",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = SecondaryText,
+                    modifier = Modifier
+                        .clickable(role = Role.Button, onClick = actions.onSkipOnboarding)
+                        .padding(horizontal = 8.dp, vertical = 12.dp),
+                )
             }
-            FeatureSurface(selected = true) {
-                Icon(details.icon, contentDescription = null, tint = Mint, modifier = Modifier.size(36.dp))
-                Text(details.title, style = MaterialTheme.typography.headlineLarge, modifier = Modifier.semantics { heading() })
-                Text(details.body, style = MaterialTheme.typography.bodyLarge, color = SecondaryText)
-                if (step in listOf(OnboardingStep.OVERLAY, OnboardingStep.ACCESSIBILITY, OnboardingStep.MICROPHONE, OnboardingStep.READY)) {
-                    CapabilitySummary(uiState)
+            OnboardingProgress(step)
+            AnimatedContent(
+                targetState = step,
+                transitionSpec = {
+                    (fadeIn(tween(220)) togetherWith fadeOut(tween(140))).using(SizeTransform(clip = false))
+                },
+                label = "onboarding-step",
+            ) { current ->
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    OnboardingGlyph(current)
+                    val currentDetails = onboardingDetails(current)
+                    Text(currentDetails.kicker.uppercase(), style = MaterialTheme.typography.labelMedium, color = Clay)
+                    Text(currentDetails.title, style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
+                    Text(currentDetails.body, style = MaterialTheme.typography.bodyLarge, color = SecondaryText)
+                    when (current) {
+                        OnboardingStep.ACCESS -> AccessChecklist(uiState, actions)
+                        OnboardingStep.MICROPHONE -> MicrophonePermissionCard(uiState, actions)
+                        OnboardingStep.TEST -> TestPreview(actions)
+                        OnboardingStep.READY -> ReadyChecklist(uiState)
+                        OnboardingStep.WELCOME -> WelcomeExample()
+                    }
                 }
             }
             OnboardingAction(step, uiState, actions)
@@ -277,64 +368,183 @@ private fun OnboardingScreen(uiState: FlowerWhispUiState, actions: FlowerWhispAc
     }
 }
 
-private data class OnboardingDetails(val title: String, val body: String, val icon: ImageVector)
+private data class OnboardingDetails(val kicker: String, val title: String, val body: String)
 
 private fun onboardingDetails(step: OnboardingStep): OnboardingDetails = when (step) {
-    OnboardingStep.MEET -> OnboardingDetails("Meet FlowerWhisp", "Speak in the field you already use. FlowerWhisp turns your words into polished text without replacing your keyboard.", Icons.Outlined.GraphicEq)
-    OnboardingStep.BUBBLE -> OnboardingDetails("The bubble stays close", "The compact bubble appears over supported text fields. Tap it when you want to dictate.", Icons.Outlined.Widgets)
-    OnboardingStep.OVERLAY -> OnboardingDetails("Allow the bubble", "Android needs display-over-other-apps access to place the bubble beside your work.", Icons.Outlined.Layers)
-    OnboardingStep.ACCESSIBILITY -> OnboardingDetails("Enable text insertion", "Accessibility access lets FlowerWhisp find the focused editable field and insert only your dictated text.", Icons.Outlined.AccessibilityNew)
-    OnboardingStep.MICROPHONE -> OnboardingDetails("Allow microphone access", "Microphone access is used only while recording your dictation.", Icons.Outlined.Mic)
-    OnboardingStep.TAP -> OnboardingDetails("Tap to dictate", "Tap once to start. Tap Stop when you finish speaking.", Icons.Outlined.TouchApp)
-    OnboardingStep.HOLD -> OnboardingDetails("Hold for quick dictation", "Press and hold the bubble while speaking. Release to finish.", Icons.Outlined.Stop)
-    OnboardingStep.REAL_TEST -> OnboardingDetails("Run a real test", "Focus a normal text field in another app, return to the bubble, and dictate a short sentence.", Icons.Outlined.Keyboard)
-    OnboardingStep.READY -> OnboardingDetails("Ready to write", "FlowerWhisp is ready only when the bubble, insertion, and microphone checks below are on.", Icons.Outlined.CheckCircle)
+    OnboardingStep.WELCOME -> OnboardingDetails("A quieter way to write", "Write what you mean", "Speak naturally. FlowerWhisp turns your voice into clean text wherever you type, without replacing your keyboard.")
+    OnboardingStep.ACCESS -> OnboardingDetails("One-time access", "Keep the bubble close", "Choose where FlowerWhisp can appear and how it can insert text. You can change these permissions any time in Settings.")
+    OnboardingStep.MICROPHONE -> OnboardingDetails("Your voice, on request", "Give your words a voice", "Microphone access is used only while you are recording a dictation. Nothing starts until you tap the bubble.")
+    OnboardingStep.TEST -> OnboardingDetails("Make it real", "Try one short dictation", "Focus a normal text field, tap FlowerWhisp, and say a sentence. The first successful insertion is the whole point of setup.")
+    OnboardingStep.READY -> OnboardingDetails("Setup check", "Ready when you are", "The essentials are in place. Start from the Dictate tab or use the bubble in any supported text field.")
 }
 
 @Composable
 private fun OnboardingAction(step: OnboardingStep, uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
     when (step) {
-        OnboardingStep.MEET -> PrimaryAction("Continue", onClick = { actions.onAdvanceOnboarding(OnboardingStep.BUBBLE) })
-        OnboardingStep.BUBBLE -> PrimaryAction("Set up the bubble", onClick = { actions.onAdvanceOnboarding(OnboardingStep.OVERLAY) })
-        OnboardingStep.OVERLAY -> if (uiState.capabilities.overlayEnabled) {
-            PrimaryAction("Continue", Icons.Outlined.Check, onClick = { actions.onAdvanceOnboarding(OnboardingStep.ACCESSIBILITY) })
-        } else PrimaryAction("Open overlay settings", Icons.Outlined.Layers, onClick = actions.onRequestOverlay)
-        OnboardingStep.ACCESSIBILITY -> if (uiState.capabilities.accessibilityEnabled) {
-            PrimaryAction("Continue", Icons.Outlined.Check, onClick = { actions.onAdvanceOnboarding(OnboardingStep.MICROPHONE) })
-        } else PrimaryAction("Open Accessibility settings", Icons.Outlined.AccessibilityNew, onClick = actions.onRequestAccessibility)
+        OnboardingStep.WELCOME -> PrimaryAction("Set up in about a minute", Icons.AutoMirrored.Outlined.ArrowForward, onClick = { actions.onAdvanceOnboarding(OnboardingStep.ACCESS) })
+        OnboardingStep.ACCESS -> when {
+            !uiState.capabilities.overlayEnabled -> PrimaryAction("Allow bubble overlay", Icons.Outlined.Layers, onClick = actions.onRequestOverlay)
+            !uiState.capabilities.accessibilityEnabled -> PrimaryAction("Enable text insertion", Icons.Outlined.AccessibilityNew, onClick = actions.onRequestAccessibility)
+            else -> PrimaryAction("Continue to microphone", Icons.AutoMirrored.Outlined.ArrowForward, onClick = { actions.onAdvanceOnboarding(OnboardingStep.MICROPHONE) })
+        }
         OnboardingStep.MICROPHONE -> if (uiState.capabilities.microphoneGranted) {
-            PrimaryAction("Continue", Icons.Outlined.Check, onClick = { actions.onAdvanceOnboarding(OnboardingStep.TAP) })
+            PrimaryAction("Continue to the test", Icons.AutoMirrored.Outlined.ArrowForward, onClick = { actions.onAdvanceOnboarding(OnboardingStep.TEST) })
         } else PrimaryAction("Allow microphone", Icons.Outlined.Mic, onClick = actions.onRequestMicrophone)
-        OnboardingStep.TAP -> PrimaryAction("Try tap mode", Icons.Outlined.TouchApp, onClick = actions.onOnboardingTap)
-        OnboardingStep.HOLD -> PrimaryAction("Try hold mode", Icons.Outlined.TouchApp, onClick = actions.onOnboardingHold)
-        OnboardingStep.REAL_TEST -> PrimaryAction("Start real test", Icons.Outlined.Mic, onClick = actions.onOnboardingRealTest)
+        OnboardingStep.TEST -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            PrimaryAction("Start a short test", Icons.Outlined.Mic, onClick = actions.onOnboardingRealTest)
+            SecondaryAction("Continue to final check", Icons.AutoMirrored.Outlined.ArrowForward, onClick = { actions.onAdvanceOnboarding(OnboardingStep.READY) })
+        }
         OnboardingStep.READY -> {
             val repair = firstRepair(uiState)
-            if (repair == null) PrimaryAction("Finish setup", Icons.Outlined.Check, onClick = actions.onCompleteOnboarding)
+            if (repair == null) PrimaryAction("Start dictating", Icons.Outlined.Check, onClick = actions.onCompleteOnboarding)
             else PrimaryAction(repair.label, repair.icon, onClick = repair.action(actions))
         }
     }
 }
 
 @Composable
-private fun CapabilitySummary(uiState: FlowerWhispUiState) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        CapabilityLine("Bubble overlay", uiState.capabilities.overlayEnabled)
-        CapabilityLine("Text insertion", uiState.capabilities.accessibilityEnabled)
-        CapabilityLine("Microphone", uiState.capabilities.microphoneGranted)
+private fun OnboardingProgress(step: OnboardingStep) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        OnboardingStep.entries.forEach { item ->
+            Box(
+                Modifier
+                    .weight(1f)
+                    .height(if (item == step) 5.dp else 3.dp)
+                    .background(if (item.ordinal <= step.ordinal) Clay else Outline, RoundedCornerShape(50)),
+            )
+        }
     }
 }
 
 @Composable
-private fun CapabilityLine(label: String, ready: Boolean) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+private fun OnboardingGlyph(step: OnboardingStep) {
+    val icon = when (step) {
+        OnboardingStep.WELCOME -> Icons.Outlined.GraphicEq
+        OnboardingStep.ACCESS -> Icons.Outlined.Layers
+        OnboardingStep.MICROPHONE -> Icons.Outlined.Mic
+        OnboardingStep.TEST -> Icons.Outlined.TouchApp
+        OnboardingStep.READY -> Icons.Outlined.CheckCircle
+    }
+    Surface(
+        color = Clay.copy(alpha = 0.12f),
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.size(56.dp),
+    ) {
+        Icon(icon, contentDescription = null, tint = Clay, modifier = Modifier.padding(15.dp))
+    }
+}
+
+@Composable
+private fun WelcomeExample() {
+    FeatureSurface {
+        Text("Say", style = MaterialTheme.typography.labelMedium, color = Clay)
+        Text("“Send the recap by Friday.”", style = MaterialTheme.typography.titleLarge)
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+            repeat(18) { index ->
+                Box(
+                    Modifier
+                        .width(3.dp)
+                        .height((5 + (index * 7 % 16)).dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(if (index % 5 == 0) Clay else SecondaryText.copy(alpha = 0.62f)),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccessChecklist(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        PermissionRow(
+            title = "Bubble overlay",
+            description = "Keep the dictation control above the app you are writing in.",
+            ready = uiState.capabilities.overlayEnabled,
+            action = actions.onRequestOverlay,
+        )
+        PermissionRow(
+            title = "Text insertion",
+            description = "Place the finished text at the cursor in the focused field.",
+            ready = uiState.capabilities.accessibilityEnabled,
+            action = actions.onRequestAccessibility,
+        )
+    }
+}
+
+@Composable
+private fun MicrophonePermissionCard(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
+    PermissionRow(
+        title = "Microphone",
+        description = "Used only while FlowerWhisp is actively recording.",
+        ready = uiState.capabilities.microphoneGranted,
+        action = actions.onRequestMicrophone,
+    )
+}
+
+@Composable
+private fun PermissionRow(title: String, description: String, ready: Boolean, action: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(SurfaceInk, RoundedCornerShape(16.dp))
+            .clickable(role = Role.Button, onClick = action)
+            .padding(horizontal = 15.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(Modifier.size(11.dp).background(if (ready) Clay else Warning, RoundedCornerShape(50)))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(description, style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
+        }
+        Text(if (ready) "Ready" else "Set up", style = MaterialTheme.typography.labelMedium, color = if (ready) Clay else Warning)
+    }
+}
+
+@Composable
+private fun TestPreview(actions: FlowerWhispActions) {
+    Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        Text("Try the instrument", style = MaterialTheme.typography.labelMedium, color = SecondaryText)
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            FlowerWhispBubble(
+                state = BubbleState.Ready,
+                elapsedSeconds = 0,
+                onStart = actions.onOnboardingRealTest,
+                onFinish = {},
+                onCancel = {},
+                onRetry = {},
+                onCopy = {},
+                onOpenApp = {},
+            )
+        }
+        Text("Focus a text field first. The test uses the same bubble you will use every day.", color = SecondaryText, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@Composable
+private fun ReadyChecklist(uiState: FlowerWhispUiState) {
+    FeatureSurface(selected = firstRepair(uiState) == null) {
+        CapabilityLine("Bubble overlay", uiState.capabilities.overlayEnabled)
+        CapabilityLine("Text insertion", uiState.capabilities.accessibilityEnabled)
+        CapabilityLine("Microphone", uiState.capabilities.microphoneGranted)
+        CapabilityLine("Notifications", uiState.capabilities.notificationsGranted, optional = true)
+    }
+}
+
+@Composable
+private fun CapabilityLine(label: String, ready: Boolean, optional: Boolean = false) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
         Icon(
             if (ready) Icons.Outlined.CheckCircle else Icons.Outlined.WarningAmber,
             contentDescription = null,
-            tint = if (ready) MintStrong else Warning,
+            tint = if (ready) Clay else Warning,
             modifier = Modifier.size(20.dp),
         )
-        Text("$label: ${if (ready) "On" else "Needs setup"}", style = MaterialTheme.typography.bodyMedium)
+        Text("$label · ${if (ready) "Ready" else if (optional) "Optional" else "Needs setup"}", style = MaterialTheme.typography.bodyMedium)
     }
 }
 
@@ -355,54 +565,68 @@ private fun firstRepair(uiState: FlowerWhispUiState): Repair? = when {
 }
 
 @Composable
-private fun HomeScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
-    ScreenColumn("home-screen") {
-        ScreenHeader("Home", "Live readiness and dictation controls")
+private fun DictationScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
+    ScreenColumn("dictation-screen") {
+        ScreenHeader("Dictate", "Speak naturally. Keep your hands on the field.")
         val recoverable = uiState.history.firstOrNull {
             it.recoveryAudioPath != null && it.status != DictationStatus.COMPLETE
         }
         if (recoverable != null) {
-            FeatureSurface(selected = true) {
+            FeatureSurface {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(Icons.Outlined.Refresh, contentDescription = null, tint = Warning, modifier = Modifier.size(32.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("Your recording is safe", style = MaterialTheme.typography.titleLarge)
-                        Text("The previous dictation did not finish. Retry it without recording again.", color = SecondaryText)
+                    Icon(Icons.Outlined.Refresh, contentDescription = null, tint = Warning, modifier = Modifier.size(30.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("Recording recovered", style = MaterialTheme.typography.titleLarge)
+                        Text("Your audio is safe. Retry the transcript without recording again.", color = SecondaryText)
                     }
                 }
-                PrimaryAction("Retry transcript", Icons.Outlined.Refresh) {
-                    actions.onRetryHistory(recoverable.id)
-                }
+                PrimaryAction("Retry transcript", Icons.Outlined.Refresh) { actions.onRetryHistory(recoverable.id) }
             }
         }
+
         val repair = firstRepair(uiState)
         FeatureSurface(selected = repair == null) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Icon(if (repair == null) Icons.Outlined.CheckCircle else Icons.Outlined.WarningAmber, null, tint = if (repair == null) MintStrong else Warning, modifier = Modifier.size(32.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(if (repair == null) "Ready to dictate" else "Action required", style = MaterialTheme.typography.titleLarge)
-                    Text(if (repair == null) "Bubble, insertion, and microphone are available." else repair!!.label, color = SecondaryText)
+                StatusDot(ready = repair == null)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(if (repair == null) "Ready to dictate" else "Finish setup first", style = MaterialTheme.typography.titleLarge)
+                    Text(if (repair == null) "The bubble is ready wherever you can type." else repair.label, color = SecondaryText)
                 }
+                Text(if (repair == null) "LIVE" else "SETUP", style = MaterialTheme.typography.labelMedium, color = if (repair == null) Clay else Warning)
             }
-            if (repair != null) PrimaryAction(repair.label, repair.icon, onClick = repair.action(actions))
-            else PrimaryAction("Start dictation", Icons.Outlined.Mic, onClick = actions.onStart)
+            Box(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp), contentAlignment = Alignment.Center) {
+                val state = if (uiState.bubbleState is BubbleState.Hidden) BubbleState.Ready else uiState.bubbleState
+                FlowerWhispBubble(
+                    state = state,
+                    elapsedSeconds = uiState.elapsedSeconds,
+                    onStart = actions.onStart,
+                    onFinish = actions.onFinish,
+                    onCancel = actions.onCancel,
+                    onRetry = actions.onRetry,
+                    onCopy = actions.onCopy,
+                    onOpenApp = actions.onOpenApp,
+                    reduceMotion = uiState.settings.reduceMotion,
+                )
+            }
+            if (repair != null) {
+                PrimaryAction(repair.label, repair.icon, onClick = repair.action(actions))
+            } else {
+                Text("Tap the instrument to start. Hold it for push-to-talk.", color = SecondaryText, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.align(Alignment.CenterHorizontally))
+            }
         }
 
-        SectionTitle("Bubble")
-        Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-            FlowerWhispBubble(
-                state = uiState.bubbleState,
-                elapsedSeconds = uiState.elapsedSeconds,
-                onStart = actions.onStart,
-                onFinish = actions.onFinish,
-                onCancel = actions.onCancel,
-                onRetry = actions.onRetry,
-                onCopy = actions.onCopy,
-                onOpenApp = actions.onOpenApp,
-            )
+        FeatureSurface {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Icon(Icons.Outlined.Tune, contentDescription = null, tint = Clay, modifier = Modifier.size(22.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Current voice setup", style = MaterialTheme.typography.titleMedium)
+                    Text("${uiState.settings.language.displayName} · ${uiState.settings.writingStyle.displayName}", color = SecondaryText, style = MaterialTheme.typography.bodyMedium)
+                }
+                Text("Adjust in Settings", style = MaterialTheme.typography.labelMedium, color = Clay)
+            }
         }
 
-        SectionTitle("Capabilities")
+        SectionTitle("Access", "These checks keep the instrument reliable across apps.")
         CapabilityActionRow("Bubble overlay", uiState.capabilities.overlayEnabled, Icons.Outlined.Layers, actions.onRequestOverlay)
         RowDivider()
         CapabilityActionRow("Text insertion", uiState.capabilities.accessibilityEnabled, Icons.Outlined.AccessibilityNew, actions.onRequestAccessibility)
@@ -411,8 +635,10 @@ private fun HomeScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActions)
         RowDivider()
         CapabilityActionRow("Notifications", uiState.capabilities.notificationsGranted, Icons.Outlined.Notifications, actions.onRequestNotifications)
 
+        RecentDictations(uiState.history, actions)
+
         uiState.serviceMessage?.let { message ->
-            SectionTitle("Service")
+            SectionTitle("Needs attention")
             FeatureSurface {
                 Text(message, color = Error)
                 PrimaryAction("Restart service", Icons.Outlined.RestartAlt, onClick = actions.onRestartService)
@@ -427,13 +653,118 @@ private fun HomeScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActions)
 }
 
 @Composable
+private fun RecentDictations(history: List<Dictation>, actions: FlowerWhispActions) {
+    val recent = history.take(3)
+    SectionTitle("Recent dictations")
+    if (recent.isEmpty()) {
+        Text("Your finished dictations will appear here.", style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
+    } else {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            recent.forEachIndexed { index, item ->
+                RecentDictationRow(item, actions)
+                if (index < recent.lastIndex) RowDivider()
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentDictationRow(item: Dictation, actions: FlowerWhispActions) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(role = Role.Button) { actions.onOpenHistory(item.id) }.padding(vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(Modifier.size(8.dp).background(if (item.status == DictationStatus.COMPLETE) Clay else Warning, RoundedCornerShape(50)))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(item.refinedText.ifBlank { item.originalText }.ifBlank { "Untitled dictation" }, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
+            Text("${item.wordCount} words · ${formatDuration(item.durationMs)}", style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
+        }
+        Text(formatDate(item.createdAtEpochMs), style = MaterialTheme.typography.labelMedium, color = MutedText)
+    }
+}
+
+@Composable
+private fun StatusDot(ready: Boolean) {
+    Box(Modifier.size(12.dp).background(if (ready) Clay else Warning, RoundedCornerShape(50)))
+}
+
+@Composable
+private fun InsightsScreen(uiState: FlowerWhispUiState) {
+    val snapshot = remember(uiState.history) { calculateInsights(uiState.history) }
+    ScreenColumn("insights-screen") {
+        ScreenHeader("Insights", "A small, honest view of your dictation habit")
+        if (!snapshot.hasData) {
+            StatusPanel(Icons.Outlined.GraphicEq, "Your first insight is waiting", "Complete a dictation and FlowerWhisp will show your sessions, words, and speaking time here.", Clay)
+        } else {
+            InsightMetricGrid(snapshot)
+            SectionTitle("Last seven days", "Completed dictations only")
+            ActivityBars(snapshot)
+            FeatureSurface {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Icon(Icons.Outlined.Language, contentDescription = null, tint = Clay, modifier = Modifier.size(24.dp))
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("Most used language", style = MaterialTheme.typography.titleMedium)
+                        Text(snapshot.mostUsedLanguage?.displayName ?: "Not enough data yet", style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
+                    }
+                }
+            }
+            Text("These numbers stay on this device and reflect completed records in History.", style = MaterialTheme.typography.bodyMedium, color = MutedText)
+        }
+    }
+}
+
+@Composable
+private fun InsightMetricGrid(snapshot: InsightSnapshot) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            InsightMetric("Sessions", snapshot.totalSessions.toString(), "completed", Modifier.weight(1f))
+            InsightMetric("Words", snapshot.totalWords.toString(), "refined", Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            InsightMetric("Speaking time", formatSpeakingTime(snapshot.speakingTimeMs), "recorded", Modifier.weight(1f))
+            InsightMetric("Average", snapshot.averageWordsPerSession.toString(), "words / session", Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun InsightMetric(label: String, value: String, detail: String, modifier: Modifier) {
+    Surface(modifier = modifier, color = SurfaceInk, shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, Outline)) {
+        Column(Modifier.padding(horizontal = 15.dp, vertical = 15.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text(label, style = MaterialTheme.typography.labelMedium, color = SecondaryText)
+            Text(value, style = MaterialTheme.typography.headlineMedium, color = PrimaryText)
+            Text(detail, style = MaterialTheme.typography.bodyMedium, color = MutedText)
+        }
+    }
+}
+
+@Composable
+private fun ActivityBars(snapshot: InsightSnapshot) {
+    val maxWords = snapshot.recentDays.maxOfOrNull { it.words }?.coerceAtLeast(1) ?: 1
+    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
+        snapshot.recentDays.forEach { day ->
+            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box(Modifier.fillMaxWidth().height((16f + 86f * day.words / maxWords).dp).background(if (day.words > 0) Clay else SurfaceSelected, RoundedCornerShape(7.dp)))
+                Text(day.date.dayOfWeek.name.take(1), style = MaterialTheme.typography.labelMedium, color = MutedText)
+            }
+        }
+    }
+}
+
+private fun formatSpeakingTime(durationMs: Long): String {
+    val seconds = durationMs.coerceAtLeast(0L) / 1_000L
+    return if (seconds < 60) "${seconds}s" else "${seconds / 60}m ${seconds % 60}s"
+}
+
+@Composable
 private fun CapabilityActionRow(label: String, ready: Boolean, icon: ImageVector, repair: () -> Unit) {
     ActionRow(
         icon = if (ready) Icons.Outlined.CheckCircle else icon,
         title = label,
         description = if (ready) "Available" else "Open the required Android setting",
-        value = if (ready) "On" else "Repair",
-        tint = if (ready) MintStrong else Warning,
+        value = if (ready) "Ready" else "Fix",
+        tint = if (ready) Clay else Warning,
         onClick = repair,
     )
 }
@@ -487,7 +818,7 @@ private fun HistoryListItem(item: Dictation, actions: FlowerWhispActions) {
             MinimumIconButton(
                 if (item.isFavorite) Icons.Outlined.Favorite else Icons.Outlined.FavoriteBorder,
                 if (item.isFavorite) "Remove favorite" else "Add favorite",
-                if (item.isFavorite) Mint else SecondaryText,
+                if (item.isFavorite) Clay else SecondaryText,
             ) { actions.onFavoriteHistory(item.id, !item.isFavorite) }
         }
         Text(item.refinedText.ifBlank { item.originalText }, maxLines = 3, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
@@ -504,7 +835,7 @@ private fun HistoryDetail(item: Dictation, actions: FlowerWhispActions) {
             MinimumIconButton(
                 if (item.isFavorite) Icons.Outlined.Favorite else Icons.Outlined.FavoriteBorder,
                 if (item.isFavorite) "Remove favorite" else "Add favorite",
-                if (item.isFavorite) Mint else PrimaryText,
+                if (item.isFavorite) Clay else PrimaryText,
             ) { actions.onFavoriteHistory(item.id, !item.isFavorite) }
         }
         Text(formatDate(item.createdAtEpochMs), color = SecondaryText)
@@ -529,7 +860,7 @@ private fun HistoryDetail(item: Dictation, actions: FlowerWhispActions) {
 
 @Composable
 private fun TranscriptBlock(text: String) {
-    Surface(color = SurfaceBlack, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, Outline), modifier = Modifier.fillMaxWidth()) {
+    Surface(color = SurfaceInk, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, Outline), modifier = Modifier.fillMaxWidth()) {
         Text(text, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(16.dp))
     }
 }
@@ -537,7 +868,7 @@ private fun TranscriptBlock(text: String) {
 @Composable
 private fun OutcomeLabel(status: DictationStatus) {
     val (label, tint) = when (status) {
-        DictationStatus.COMPLETE -> "Processed" to MintStrong
+        DictationStatus.COMPLETE -> "Processed" to Resolved
         DictationStatus.RECORDING -> "Recording" to Warning
         DictationStatus.PROCESSING -> "Processing" to Warning
         DictationStatus.INSERTION_FAILED -> "Not inserted" to Error
@@ -659,7 +990,7 @@ private fun DictionaryEditorDialog(
             ) { Text("Save") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        containerColor = SurfaceBlack,
+        containerColor = SurfaceInk,
     )
 }
 
@@ -687,7 +1018,7 @@ private fun SnippetEditorDialog(
             ) { Text("Save") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        containerColor = SurfaceBlack,
+        containerColor = SurfaceInk,
     )
 }
 
@@ -794,13 +1125,13 @@ private fun SettingsScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActi
         )
 
         SectionTitle("Android access")
-        ActionRow(Icons.Outlined.Layers, "Bubble overlay", if (uiState.capabilities.overlayEnabled) "Available" else "Required for the floating bubble", if (uiState.capabilities.overlayEnabled) "On" else "Repair", if (uiState.capabilities.overlayEnabled) MintStrong else Warning, actions.onRequestOverlay)
+        ActionRow(Icons.Outlined.Layers, "Bubble overlay", if (uiState.capabilities.overlayEnabled) "Available" else "Required for the floating bubble", if (uiState.capabilities.overlayEnabled) "Ready" else "Fix", if (uiState.capabilities.overlayEnabled) Clay else Warning, actions.onRequestOverlay)
         RowDivider()
-        ActionRow(Icons.Outlined.AccessibilityNew, "Text insertion", if (uiState.capabilities.accessibilityEnabled) "Available" else "Required to insert in the focused field", if (uiState.capabilities.accessibilityEnabled) "On" else "Repair", if (uiState.capabilities.accessibilityEnabled) MintStrong else Warning, actions.onRequestAccessibility)
+        ActionRow(Icons.Outlined.AccessibilityNew, "Text insertion", if (uiState.capabilities.accessibilityEnabled) "Available" else "Required to insert in the focused field", if (uiState.capabilities.accessibilityEnabled) "Ready" else "Fix", if (uiState.capabilities.accessibilityEnabled) Clay else Warning, actions.onRequestAccessibility)
         RowDivider()
-        ActionRow(Icons.Outlined.Mic, "Microphone", if (uiState.capabilities.microphoneGranted) "Available" else "Required while recording", if (uiState.capabilities.microphoneGranted) "On" else "Repair", if (uiState.capabilities.microphoneGranted) MintStrong else Warning, actions.onRequestMicrophone)
+        ActionRow(Icons.Outlined.Mic, "Microphone", if (uiState.capabilities.microphoneGranted) "Available" else "Required while recording", if (uiState.capabilities.microphoneGranted) "Ready" else "Fix", if (uiState.capabilities.microphoneGranted) Clay else Warning, actions.onRequestMicrophone)
         RowDivider()
-        ActionRow(Icons.Outlined.Notifications, "Notifications", if (uiState.capabilities.notificationsGranted) "Available" else "Required for reliable foreground operation", if (uiState.capabilities.notificationsGranted) "On" else "Repair", if (uiState.capabilities.notificationsGranted) MintStrong else Warning, actions.onRequestNotifications)
+        ActionRow(Icons.Outlined.Notifications, "Notifications", if (uiState.capabilities.notificationsGranted) "Available" else "Required for reliable foreground operation", if (uiState.capabilities.notificationsGranted) "Ready" else "Fix", if (uiState.capabilities.notificationsGranted) Clay else Warning, actions.onRequestNotifications)
 
         SectionTitle("Service")
         if (uiState.settings.snoozedUntilEpochMs > System.currentTimeMillis() || uiState.bubbleState is BubbleState.Snoozed) {
@@ -837,13 +1168,13 @@ private fun StatusPanel(icon: ImageVector, title: String, description: String, t
 private fun fieldColors() = OutlinedTextFieldDefaults.colors(
     focusedTextColor = PrimaryText,
     unfocusedTextColor = PrimaryText,
-    focusedBorderColor = Mint,
+    focusedBorderColor = Clay,
     unfocusedBorderColor = Outline,
-    focusedLabelColor = Mint,
+    focusedLabelColor = Clay,
     unfocusedLabelColor = SecondaryText,
-    cursorColor = Mint,
-    focusedContainerColor = SurfaceBlack,
-    unfocusedContainerColor = SurfaceBlack,
+    cursorColor = Clay,
+    focusedContainerColor = SurfaceInk,
+    unfocusedContainerColor = SurfaceInk,
 )
 
 private fun formatDate(epochMs: Long): String = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(epochMs))

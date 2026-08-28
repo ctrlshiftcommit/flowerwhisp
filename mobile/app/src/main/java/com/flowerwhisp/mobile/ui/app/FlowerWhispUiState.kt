@@ -10,21 +10,18 @@ import com.flowerwhisp.mobile.domain.model.WritingStyle
 import com.flowerwhisp.mobile.platform.CapabilitySnapshot
 
 enum class FlowerWhispDestination(val label: String) {
-    HOME("Home"),
+    HOME("Dictate"),
+    INSIGHTS("Insights"),
     HISTORY("History"),
     LIBRARY("Library"),
     SETTINGS("Settings"),
 }
 
 enum class OnboardingStep {
-    MEET,
-    BUBBLE,
-    OVERLAY,
-    ACCESSIBILITY,
+    WELCOME,
+    ACCESS,
     MICROPHONE,
-    TAP,
-    HOLD,
-    REAL_TEST,
+    TEST,
     READY,
 }
 
@@ -36,7 +33,7 @@ enum class LibrarySection(val label: String) {
 
 data class FlowerWhispUiState(
     val onboardingComplete: Boolean = false,
-    val onboardingStep: OnboardingStep = OnboardingStep.MEET,
+    val onboardingStep: OnboardingStep = OnboardingStep.WELCOME,
     val destination: FlowerWhispDestination = FlowerWhispDestination.HOME,
     val capabilities: CapabilitySnapshot = CapabilitySnapshot(
         accessibilityEnabled = false,
@@ -69,6 +66,7 @@ data class FlowerWhispActions(
     val onNavigate: (FlowerWhispDestination) -> Unit = {},
     val onAdvanceOnboarding: (OnboardingStep) -> Unit = {},
     val onCompleteOnboarding: () -> Unit = {},
+    val onSkipOnboarding: () -> Unit = {},
     val onRequestAccessibility: () -> Unit = {},
     val onRequestOverlay: () -> Unit = {},
     val onRequestMicrophone: () -> Unit = {},
