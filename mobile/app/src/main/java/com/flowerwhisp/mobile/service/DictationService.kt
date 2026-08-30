@@ -7,12 +7,15 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
+import android.media.ToneGenerator
+import android.os.Handler
 import android.os.IBinder
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
@@ -24,20 +27,31 @@ import com.flowerwhisp.mobile.accessibility.TargetCaptureResult
 import com.flowerwhisp.mobile.accessibility.TargetInsertionOutcome
 import com.flowerwhisp.mobile.accessibility.TargetToken
 import com.flowerwhisp.mobile.domain.model.AppSettings
+import com.flowerwhisp.mobile.domain.model.appliesTo
+import com.flowerwhisp.mobile.domain.model.CleanupLevel
+import com.flowerwhisp.mobile.domain.model.CleanupStatus
 import com.flowerwhisp.mobile.domain.model.Dictation
 import com.flowerwhisp.mobile.domain.model.DictationStatus
+import com.flowerwhisp.mobile.domain.model.forPackageContext
+import com.flowerwhisp.mobile.domain.model.styleContextForPackage
 import com.flowerwhisp.mobile.domain.model.ProcessingStage
+import com.flowerwhisp.mobile.domain.model.RetentionMode
 import com.flowerwhisp.mobile.domain.ports.AudioRecording
 import com.flowerwhisp.mobile.overlay.OverlayRuntime
 import com.flowerwhisp.mobile.overlay.OverlayStatus
 import com.flowerwhisp.mobile.platform.CapabilityMonitor
+import com.flowerwhisp.mobile.platform.SensitiveClipboard
+import com.flowerwhisp.mobile.refinement.DeterministicTextRefiner
+import com.flowerwhisp.mobile.transcription.GroqEngineException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -49,6 +63,7 @@ class DictationService : Service() {
     private val serviceScope = CoroutineScope(serviceJob + Dispatchers.Main.immediate)
     private var activeSession: RecordingSession? = null
     private var levelJob: Job? = null
+    private var autoStopJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -56,7 +71,9 @@ class DictationService : Service() {
         when (intent?.action) {
             ACTION_START_FROM_BUBBLE, ACTION_START_FROM_APP -> startRecording(intent)
             ACTION_STOP -> serviceScope.launch { stopAndProcess() }
-            ACTION_CANCEL -> serviceScope.launch { cancelActiveSession("Recording cancelled") }
+            ACTION_CANCEL -> serviceScope.launch {
+                cancelActiveSession("Recording cancelled", preserveRecovery = false)
+            }
             else -> stopSelf(startId)
         }
         return START_NOT_STICKY
@@ -64,7 +81,10 @@ class DictationService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         serviceScope.launch {
-            cancelActiveSession("FlowerWhisp was closed while dictation was active")
+            cancelActiveSession(
+                "FlowerWhisp was closed while dictation was active",
+                preserveRecovery = true,
+            )
             stopSelf()
         }
         super.onTaskRemoved(rootIntent)
@@ -73,6 +93,7 @@ class DictationService : Service() {
     override fun onDestroy() {
         val session = activeSession
         levelJob?.cancel()
+        autoStopJob?.cancel()
         serviceJob.cancel()
         if (session != null) {
             runBlocking(Dispatchers.IO) {
@@ -80,7 +101,7 @@ class DictationService : Service() {
                     runCatching { session.dependencies.audioRecorder.cancel() }
                     session.microphoneMayBeOwned = false
                 }
-                session.stoppedRecording?.let { recording ->
+                (session.stoppedRecording ?: session.recoverableOutput())?.let { recording ->
                     if (!session.recoveryPersisted && !session.completed) {
                         persistRecovery(
                             session = session,
@@ -92,6 +113,7 @@ class DictationService : Service() {
                     }
                 }
             }
+            releaseAudioFocus(session)
         }
         activeSession = null
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -117,7 +139,7 @@ class DictationService : Service() {
             failAndStop("Microphone permission is required before recording can start")
             return
         }
-        if (!capability.accessibilityEnabled) {
+        if (!capability.textInsertionReady) {
             failAndStop("FlowerWhisp accessibility disconnected before recording started")
             return
         }
@@ -154,17 +176,61 @@ class DictationService : Service() {
         }
 
         serviceScope.launch {
+            val startSettings = runCatching { dependencies.settingsRepository.settings.first() }
+                .getOrElse { AppSettings() }
+            session.settings = startSettings
+            val providerReady = startSettings.useMockEngines || runCatching {
+                dependencies.settingsRepository.hasGroqApiKey()
+            }.getOrDefault(false)
+            if (!providerReady) {
+                session.startOutcome.complete(false)
+                failAndStop("Add a Groq API key before starting dictation")
+                return@launch
+            }
+            if (startSettings.muteMusicWhileDictating) requestAudioFocus(session)
+            if (startSettings.playSounds) playCue(starting = true)
             session.microphoneMayBeOwned = true
             try {
                 dependencies.audioRecorder.start(output)
+                // The provider/key lookup and MediaRecorder preparation can take long enough
+                // that measuring from service creation would allow an immediate, invalid stop.
+                // Start the minimum-duration window only after the microphone is truly live.
+                session.startedAtElapsedMs = SystemClock.elapsedRealtime()
+                if (session.cancelRequested || activeSession !== session) {
+                    runCatching { dependencies.audioRecorder.cancel() }
+                    session.microphoneMayBeOwned = false
+                    if (session.preserveRecoveryOnCancel) {
+                        session.recoverableOutput()?.let { recording ->
+                            persistRecovery(
+                                session = session,
+                                recording = recording,
+                                originalText = session.originalText,
+                                refinedText = session.refinedText,
+                                status = DictationStatus.CANCELLED,
+                            )
+                        }
+                    } else {
+                        runCatching { output.delete() }
+                    }
+                    session.startOutcome.complete(false)
+                    return@launch
+                }
+                session.startOutcome.complete(true)
                 levelJob = launch {
                     dependencies.audioRecorder.level.collect { DictationRuntime.updateLevel(it) }
                 }
+                autoStopJob = serviceScope.launch {
+                    delay(MAX_RECORDING_DURATION_MS)
+                    autoStopJob = null
+                    stopAndProcess()
+                }
             } catch (failure: CancellationException) {
+                session.startOutcome.complete(false)
                 throw failure
             } catch (failure: Throwable) {
                 runCatching { dependencies.audioRecorder.cancel() }
                 session.microphoneMayBeOwned = false
+                session.startOutcome.complete(false)
                 failAndStop("FlowerWhisp could not start the microphone")
             }
         }
@@ -172,9 +238,17 @@ class DictationService : Service() {
 
     private suspend fun stopAndProcess() {
         val session = activeSession ?: return
+        if (session.stopRequested) return
+        session.stopRequested = true
+        if (!session.startOutcome.await() || activeSession !== session) return
         if (session.stoppedRecording != null || !session.microphoneMayBeOwned) return
+        val remainingMinimum = MIN_RECORDING_DURATION_MS -
+            (SystemClock.elapsedRealtime() - session.startedAtElapsedMs)
+        if (remainingMinimum > 0L) delay(remainingMinimum)
         levelJob?.cancel()
         levelJob = null
+        autoStopJob?.cancel()
+        autoStopJob = null
 
         val recording = try {
             session.dependencies.audioRecorder.stop()
@@ -188,6 +262,8 @@ class DictationService : Service() {
         }
         session.microphoneMayBeOwned = false
         session.stoppedRecording = recording
+        releaseAudioFocus(session)
+        if (session.settings?.playSounds == true) playCue(starting = false)
         updateNotification("Processing your dictation")
         processStoppedRecording(session, recording)
     }
@@ -195,7 +271,9 @@ class DictationService : Service() {
     private suspend fun processStoppedRecording(session: RecordingSession, recording: AudioRecording) {
         var failureStatus = DictationStatus.TRANSCRIPTION_FAILED
         try {
-            val settings = session.dependencies.settingsRepository.settings.first()
+            val storedSettings = session.dependencies.settingsRepository.settings.first()
+            val context = styleContextForPackage(session.token.packageName)
+            val settings = storedSettings.forPackageContext(session.token.packageName)
             session.settings = settings
             DictationRuntime.processing(ProcessingStage.TRANSCRIBING)
             val original = session.dependencies.transcriptionEngine
@@ -204,22 +282,41 @@ class DictationService : Service() {
             if (original.isBlank()) throw PipelineFailure("Transcription returned no text")
             session.originalText = original
 
+            val dictionary = session.dependencies.dictionaryRepository.observeAll().first()
+                .filter { it.appliesTo(context) }
+            val snippets = session.dependencies.snippetRepository.observeAll().first()
+            val safeText = DeterministicTextRefiner.refine(
+                source = original,
+                style = settings.writingStyle,
+                settings = settings,
+                dictionary = dictionary,
+                snippets = snippets,
+            )
+            if (safeText.isBlank()) throw PipelineFailure("Text processing returned no text")
+            session.safeText = safeText
+
             failureStatus = DictationStatus.REFINEMENT_FAILED
             DictationRuntime.processing(ProcessingStage.REFINING)
-            val refined = if (settings.aiRefinement) {
-                val dictionary = session.dependencies.dictionaryRepository.observeAll().first()
-                val snippets = session.dependencies.snippetRepository.observeAll().first()
-                session.dependencies.refinementEngine.refine(
-                    source = original,
-                    style = settings.writingStyle,
-                    settings = settings,
-                    dictionary = dictionary,
-                    snippets = snippets,
-                ).trim()
+            val refined = if (settings.aiRefinement && settings.cleanupLevel != CleanupLevel.NONE) {
+                try {
+                    session.dependencies.refinementEngine.refine(
+                        source = safeText,
+                        style = settings.writingStyle,
+                        settings = settings,
+                        dictionary = dictionary,
+                        snippets = snippets,
+                    ).trim().takeIf(String::isNotEmpty)?.also { result ->
+                        session.cleanupStatus = if (result == safeText) CleanupStatus.UNCHANGED else CleanupStatus.APPLIED
+                    } ?: safeText.also { session.cleanupStatus = CleanupStatus.UNCHANGED }
+                } catch (failure: Throwable) {
+                    session.cleanupStatus = CleanupStatus.FAILED
+                    session.cleanupError = failure.message?.take(240)?.takeIf(String::isNotBlank)
+                        ?: "Text cleanup failed"
+                    safeText
+                }
             } else {
-                original
+                safeText
             }
-            if (refined.isBlank()) throw PipelineFailure("Refinement returned no text")
             session.refinedText = refined
 
             failureStatus = DictationStatus.INSERTION_FAILED
@@ -230,7 +327,7 @@ class DictationService : Service() {
                 TargetInsertionOutcome.VerifiedInserted -> {
                     persistCompleted(session, recording)
                     session.completed = true
-                    recording.file.delete()
+                    if (!session.shouldRetainCompletedAudio()) recording.file.delete()
                     DictationRuntime.onSuccess()
                 }
                 is TargetInsertionOutcome.ClipboardFallback -> {
@@ -269,6 +366,7 @@ class DictationService : Service() {
                 status = failureStatus,
             )
             val message = (failure as? PipelineFailure)?.publicMessage
+                ?: (failure as? GroqEngineException)?.message?.take(240)?.takeIf(String::isNotBlank)
                 ?: when (failureStatus) {
                     DictationStatus.TRANSCRIPTION_FAILED -> "FlowerWhisp could not transcribe the preserved recording"
                     DictationStatus.REFINEMENT_FAILED -> "FlowerWhisp could not refine the preserved recording"
@@ -284,9 +382,10 @@ class DictationService : Service() {
             session.toDictation(
                 recording = recording,
                 originalText = session.originalText,
+                safeText = session.safeText,
                 refinedText = session.refinedText,
                 status = DictationStatus.COMPLETE,
-                recoveryAudioPath = null,
+                recoveryAudioPath = recording.file.absolutePath.takeIf { session.shouldRetainCompletedAudio() },
             ),
         )
         session.recoveryPersisted = true
@@ -296,6 +395,7 @@ class DictationService : Service() {
         session: RecordingSession,
         recording: AudioRecording,
         originalText: String,
+        safeText: String = session.safeText,
         refinedText: String,
         status: DictationStatus,
     ): Long? {
@@ -305,6 +405,7 @@ class DictationService : Service() {
                 session.toDictation(
                     recording = recording,
                     originalText = originalText,
+                    safeText = safeText,
                     refinedText = refinedText,
                     status = status,
                     recoveryAudioPath = recording.file.absolutePath,
@@ -319,6 +420,7 @@ class DictationService : Service() {
     private fun RecordingSession.toDictation(
         recording: AudioRecording,
         originalText: String,
+        safeText: String,
         refinedText: String,
         status: DictationStatus,
         recoveryAudioPath: String?,
@@ -326,21 +428,58 @@ class DictationService : Service() {
         id = persistedId ?: 0,
         createdAtEpochMs = createdAtEpochMs,
         originalText = originalText,
+        safeText = safeText,
         refinedText = refinedText,
         durationMs = recording.durationMs,
         language = settings?.language ?: com.flowerwhisp.mobile.domain.model.LanguageMode.AUTO,
         status = status,
         recoveryAudioPath = recoveryAudioPath,
+        cleanupStatus = cleanupStatus,
+        cleanupError = cleanupError,
     )
+
+    private fun RecordingSession.shouldRetainCompletedAudio(): Boolean =
+        settings?.retentionMode != RetentionMode.NEVER || cleanupStatus == CleanupStatus.FAILED
+
+    private fun requestAudioFocus(session: RecordingSession) {
+        val manager = getSystemService(AudioManager::class.java)
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
+            .setAcceptsDelayedFocusGain(false)
+            .setWillPauseWhenDucked(true)
+            .setOnAudioFocusChangeListener { }
+            .build()
+        if (runCatching { manager.requestAudioFocus(request) }.getOrNull() == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            session.audioFocusRequest = request
+        }
+    }
+
+    private fun releaseAudioFocus(session: RecordingSession) {
+        val request = session.audioFocusRequest ?: return
+        runCatching { getSystemService(AudioManager::class.java).abandonAudioFocusRequest(request) }
+        session.audioFocusRequest = null
+    }
+
+    private fun playCue(starting: Boolean) {
+        val tone = runCatching { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 42) }.getOrNull() ?: return
+        val toneType = if (starting) ToneGenerator.TONE_PROP_BEEP else ToneGenerator.TONE_PROP_ACK
+        if (!tone.startTone(toneType, 90)) {
+            tone.release()
+            return
+        }
+        Handler(mainLooper).postDelayed({ runCatching { tone.release() } }, 180L)
+    }
 
     private fun ensureClipboardRecovery(outcome: TargetInsertionOutcome): TargetInsertionOutcome {
         if (outcome !is TargetInsertionOutcome.ClipboardFallback || outcome.copied || outcome.text.isBlank()) {
             return outcome
         }
-        val copied = runCatching {
-            getSystemService(ClipboardManager::class.java)
-                .setPrimaryClip(ClipData.newPlainText("FlowerWhisp dictation", outcome.text))
-        }.isSuccess
+        val copied = SensitiveClipboard.copy(this, outcome.text)
         return outcome.copy(
             copied = copied,
             reason = if (copied) {
@@ -351,24 +490,50 @@ class DictationService : Service() {
         )
     }
 
-    private suspend fun cancelActiveSession(message: String) {
+    private suspend fun cancelActiveSession(message: String, preserveRecovery: Boolean) {
         val session = activeSession
+        session?.cancelRequested = true
+        session?.preserveRecoveryOnCancel = preserveRecovery
+        if (session != null && !session.startOutcome.isCompleted) {
+            session.startOutcome.await()
+        }
+        val wasRecording = session?.microphoneMayBeOwned == true
         levelJob?.cancel()
         levelJob = null
+        autoStopJob?.cancel()
+        autoStopJob = null
         if (session != null && session.microphoneMayBeOwned) {
             runCatching { session.dependencies.audioRecorder.cancel() }
             session.microphoneMayBeOwned = false
         }
-        session?.stoppedRecording?.let { recording ->
+        if (session != null) {
+            releaseAudioFocus(session)
+            if (wasRecording && session.settings?.playSounds == true) playCue(starting = false)
+        }
+        val recoverable = session?.stoppedRecording ?: session?.recoverableOutput()
+        if (preserveRecovery && session != null && recoverable != null) {
             persistRecovery(
                 session = session,
-                recording = recording,
+                recording = recoverable,
                 originalText = session.originalText,
                 refinedText = session.refinedText,
                 status = DictationStatus.CANCELLED,
             )
         }
-        DictationRuntime.onServiceError(message, session?.persistedId)
+        if (!preserveRecovery) {
+            session?.outputFile?.let { output -> runCatching { output.delete() } }
+        }
+        if (preserveRecovery) {
+            DictationRuntime.onServiceError(message, session?.persistedId)
+        } else {
+            val capabilities = CapabilityMonitor(this).snapshot(
+                accessibilityConnected = FlowerWhispAccessibilityService.isConnected(),
+            )
+            DictationRuntime.resetToAvailability(
+                capabilities.canShowBubble &&
+                    FlowerWhispAccessibilityService.targetAwareGateway.hasSupportedFocusedField(),
+            )
+        }
         activeSession = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -449,10 +614,22 @@ class DictationService : Service() {
 
     private fun failAndStop(message: String) {
         val session = activeSession
+        session?.cancelRequested = true
+        session?.startOutcome?.complete(false)
+        levelJob?.cancel()
+        levelJob = null
+        autoStopJob?.cancel()
+        autoStopJob = null
         if (session?.microphoneMayBeOwned == true) {
-            serviceScope.launch { runCatching { session.dependencies.audioRecorder.cancel() } }
+            runBlocking(Dispatchers.IO) {
+                runCatching { session.dependencies.audioRecorder.cancel() }
+            }
             session.microphoneMayBeOwned = false
         }
+        if (session != null && !session.recoveryPersisted && !session.completed) {
+            runCatching { session.outputFile.delete() }
+        }
+        if (session != null) releaseAudioFocus(session)
         DictationRuntime.onServiceError(message, session?.persistedId)
         activeSession = null
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -464,16 +641,33 @@ class DictationService : Service() {
         val dependencies: DictationDependencies,
         val outputFile: File,
         val createdAtEpochMs: Long,
-        val startedAtElapsedMs: Long,
+        var startedAtElapsedMs: Long,
         var microphoneMayBeOwned: Boolean = false,
         var stoppedRecording: AudioRecording? = null,
         var settings: AppSettings? = null,
         var originalText: String = "",
+        var safeText: String = "",
         var refinedText: String = "",
+        var cleanupStatus: CleanupStatus = CleanupStatus.DISABLED,
+        var cleanupError: String? = null,
+        var audioFocusRequest: AudioFocusRequest? = null,
         var persistedId: Long? = null,
         var recoveryPersisted: Boolean = false,
         var completed: Boolean = false,
+        var cancelRequested: Boolean = false,
+        var preserveRecoveryOnCancel: Boolean = false,
+        var stopRequested: Boolean = false,
+        val startOutcome: CompletableDeferred<Boolean> = CompletableDeferred(),
     )
+
+    private fun RecordingSession.recoverableOutput(): AudioRecording? = outputFile
+        .takeIf { it.isFile && it.length() > 0L }
+        ?.let {
+            AudioRecording(
+                file = it,
+                durationMs = (SystemClock.elapsedRealtime() - startedAtElapsedMs).coerceAtLeast(0L),
+            )
+        }
 
     private class PipelineFailure(val publicMessage: String) : IllegalStateException(publicMessage)
 
@@ -491,6 +685,8 @@ class DictationService : Service() {
         private const val NOTIFICATION_ID = 4107
         private const val REQUEST_STOP = 4108
         private const val REQUEST_CANCEL = 4109
+        private const val MIN_RECORDING_DURATION_MS = 650L
+        private const val MAX_RECORDING_DURATION_MS = 15L * 60L * 1_000L
 
         fun startFromBubble(context: Context, token: TargetToken): String? {
             if (OverlayRuntime.status.value !is OverlayStatus.Visible) {

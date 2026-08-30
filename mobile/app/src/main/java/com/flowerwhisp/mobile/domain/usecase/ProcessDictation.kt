@@ -1,19 +1,22 @@
 package com.flowerwhisp.mobile.domain.usecase
 
 import com.flowerwhisp.mobile.domain.model.AppSettings
+import com.flowerwhisp.mobile.domain.model.CleanupLevel
+import com.flowerwhisp.mobile.domain.model.CleanupStatus
 import com.flowerwhisp.mobile.domain.model.Dictation
 import com.flowerwhisp.mobile.domain.model.DictationStatus
+import com.flowerwhisp.mobile.domain.model.RetentionMode
 import com.flowerwhisp.mobile.domain.ports.AudioRecording
 import com.flowerwhisp.mobile.domain.ports.DictionaryRepository
 import com.flowerwhisp.mobile.domain.ports.HistoryRepository
 import com.flowerwhisp.mobile.domain.ports.SnippetRepository
 import com.flowerwhisp.mobile.domain.ports.TextRefinementEngine
 import com.flowerwhisp.mobile.domain.ports.TranscriptionEngine
+import com.flowerwhisp.mobile.refinement.DeterministicTextRefiner
 import kotlinx.coroutines.flow.first
 
 sealed interface ProcessingResult {
     data class Complete(val dictation: Dictation) : ProcessingResult
-    data class RefinementFailed(val dictation: Dictation, val reason: String) : ProcessingResult
     data class TranscriptionFailed(val recovery: Dictation, val reason: String) : ProcessingResult
 }
 
@@ -53,32 +56,45 @@ class ProcessDictation(
 
         val dictionary = dictionaryRepository.observeAll().first()
         val snippets = snippetRepository.observeAll().first()
-        val refined = if (settings.aiRefinement) {
+        val safeText = DeterministicTextRefiner.refine(
+            source = raw,
+            style = settings.writingStyle,
+            settings = settings,
+            dictionary = dictionary,
+            snippets = snippets,
+        )
+        var cleanupStatus = CleanupStatus.DISABLED
+        var cleanupError: String? = null
+        val refined = if (settings.aiRefinement && settings.cleanupLevel != CleanupLevel.NONE) {
             try {
-                refinementEngine.refine(raw, settings.writingStyle, settings, dictionary, snippets).trim()
+                refinementEngine.refine(safeText, settings.writingStyle, settings, dictionary, snippets).trim()
                     .takeIf(String::isNotEmpty)
-                    ?: raw
+                    ?.also { cleanupStatus = if (it == safeText) CleanupStatus.UNCHANGED else CleanupStatus.APPLIED }
+                    ?: safeText.also { cleanupStatus = CleanupStatus.UNCHANGED }
             } catch (error: Exception) {
-                val fallback = record.copy(
-                    originalText = raw,
-                    refinedText = raw,
-                    status = DictationStatus.REFINEMENT_FAILED,
-                )
-                historyRepository.upsert(fallback)
-                return ProcessingResult.RefinementFailed(fallback, error.safeMessage("Text refinement failed"))
+                cleanupStatus = CleanupStatus.FAILED
+                cleanupError = error.safeMessage("Text cleanup failed")
+                safeText
             }
         } else {
-            raw
+            safeText
         }
 
-        recording.file.delete()
+        val retainAudio = settings.retentionMode != RetentionMode.NEVER || cleanupStatus == CleanupStatus.FAILED
+        if (!retainAudio) recording.file.delete()
         val complete = record.copy(
             originalText = raw,
+            safeText = safeText,
             refinedText = refined,
             status = DictationStatus.COMPLETE,
-            recoveryAudioPath = null,
+            recoveryAudioPath = recording.file.absolutePath.takeIf { retainAudio },
+            cleanupStatus = cleanupStatus,
+            cleanupError = cleanupError,
         )
-        if (settings.privacyMode) {
+        if (
+            (settings.privacyMode || settings.retentionMode == RetentionMode.NEVER) &&
+            cleanupStatus != CleanupStatus.FAILED
+        ) {
             historyRepository.delete(pendingId)
         } else {
             historyRepository.upsert(complete)

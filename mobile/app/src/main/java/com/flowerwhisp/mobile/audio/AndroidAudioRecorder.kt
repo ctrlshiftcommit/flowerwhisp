@@ -47,7 +47,8 @@ class AndroidAudioRecorder(context: Context) : AudioRecorder {
                     mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                     mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                     mediaRecorder.setAudioChannels(AUDIO_CHANNELS)
-                    mediaRecorder.setAudioSamplingRate(SAMPLE_RATE_HZ)
+                    // Let the device's AAC encoder select its supported native sample rate.
+                    // Forcing 16 kHz causes prepare/start failures on some OEM codecs.
                     mediaRecorder.setAudioEncodingBitRate(BIT_RATE_BPS)
                     mediaRecorder.setOutputFile(output.absolutePath)
                     mediaRecorder.prepare()
@@ -149,7 +150,6 @@ class AndroidAudioRecorder(context: Context) : AudioRecorder {
 
     private companion object {
         const val AUDIO_CHANNELS = 1
-        const val SAMPLE_RATE_HZ = 16_000
         const val BIT_RATE_BPS = 64_000
         const val MAX_AMPLITUDE = 32_767
         const val LEVEL_SAMPLE_INTERVAL_MS = 50L

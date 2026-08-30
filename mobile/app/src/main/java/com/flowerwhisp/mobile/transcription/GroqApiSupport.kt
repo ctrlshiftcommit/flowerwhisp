@@ -21,6 +21,11 @@ class GroqEngineException(message: String, cause: Throwable? = null) : IOExcepti
 internal object GroqApiSupport {
     const val TRANSCRIPTIONS_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
     const val CHAT_COMPLETIONS_URL = "https://api.groq.com/openai/v1/chat/completions"
+    val TRANSCRIPTION_MODELS = setOf("whisper-large-v3-turbo", "whisper-large-v3")
+    val REFINEMENT_MODELS = setOf(
+        "openai/gpt-oss-20b",
+        "openai/gpt-oss-120b",
+    )
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -32,6 +37,9 @@ internal object GroqApiSupport {
         .readTimeout(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .writeTimeout(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .callTimeout(REQUEST_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        // Never forward a bearer key, transcript, or recording through an HTTP redirect.
+        .followRedirects(false)
+        .followSslRedirects(false)
         .build()
 
     suspend fun execute(client: OkHttpClient, request: Request): Response =

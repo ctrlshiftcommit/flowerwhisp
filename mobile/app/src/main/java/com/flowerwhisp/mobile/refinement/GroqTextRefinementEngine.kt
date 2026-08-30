@@ -6,6 +6,7 @@ import com.flowerwhisp.mobile.domain.model.Snippet
 import com.flowerwhisp.mobile.domain.model.WritingStyle
 import com.flowerwhisp.mobile.domain.ports.SettingsRepository
 import com.flowerwhisp.mobile.domain.ports.TextRefinementEngine
+import com.flowerwhisp.mobile.domain.ports.TextTransformEngine
 import com.flowerwhisp.mobile.transcription.GroqApiSupport
 import com.flowerwhisp.mobile.transcription.GroqEngineException
 import okhttp3.MediaType.Companion.toMediaType
@@ -16,7 +17,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 class GroqTextRefinementEngine(
     private val settingsRepository: SettingsRepository,
     client: OkHttpClient,
-) : TextRefinementEngine {
+) : TextRefinementEngine, TextTransformEngine {
     private val httpClient = GroqApiSupport.boundedClient(client)
 
     override suspend fun refine(
@@ -30,6 +31,7 @@ class GroqTextRefinementEngine(
         if (settings.groqRefinementModel.isBlank()) {
             throw GroqEngineException("No Groq refinement model is configured")
         }
+        requireSupportedModel(settings.groqRefinementModel)
         val apiKey = settingsRepository.groqApiKey()?.trim()
             ?.takeIf(String::isNotEmpty)
             ?: throw GroqEngineException("Add a Groq API key before using cloud refinement")
@@ -50,6 +52,43 @@ class GroqTextRefinementEngine(
             val responseBody = response.body?.string()
                 ?: throw GroqEngineException("Groq returned an empty refinement response")
             GroqApiSupport.parseRefinementResponse(responseBody)
+        }
+    }
+
+    override suspend fun transform(
+        source: String,
+        instructions: String,
+        settings: AppSettings,
+    ): String {
+        if (source.isBlank()) return ""
+        if (instructions.isBlank()) throw GroqEngineException("Add transform instructions first")
+        requireSupportedModel(settings.groqRefinementModel)
+        val apiKey = settingsRepository.groqApiKey()?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?: throw GroqEngineException("Add a Groq API key before using transforms")
+        val body = GroqRefinementPayload.buildTransform(source, instructions, settings)
+            .toRequestBody(JSON_MEDIA_TYPE)
+        val request = Request.Builder()
+            .url(GroqApiSupport.CHAT_COMPLETIONS_URL)
+            .header("Authorization", "Bearer $apiKey")
+            .post(body)
+            .build()
+
+        return GroqApiSupport.execute(httpClient, request).use { response ->
+            if (!response.isSuccessful) {
+                throw GroqEngineException(
+                    "Groq rejected the transform request (HTTP ${response.code})",
+                )
+            }
+            val responseBody = response.body?.string()
+                ?: throw GroqEngineException("Groq returned an empty transform response")
+            GroqApiSupport.parseRefinementResponse(responseBody)
+        }
+    }
+
+    private fun requireSupportedModel(model: String) {
+        if (model.trim() !in GroqApiSupport.REFINEMENT_MODELS) {
+            throw GroqEngineException("The selected Groq cleanup model is unavailable")
         }
     }
 

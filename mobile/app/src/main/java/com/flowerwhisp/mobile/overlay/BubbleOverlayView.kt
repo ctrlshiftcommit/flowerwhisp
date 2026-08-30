@@ -10,6 +10,9 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.HapticFeedbackConstants
+import androidx.core.content.res.ResourcesCompat
+import com.flowerwhisp.mobile.R
 import com.flowerwhisp.mobile.domain.model.BubbleState
 import com.flowerwhisp.mobile.domain.model.ProcessingStage
 import kotlin.math.abs
@@ -37,7 +40,8 @@ internal class BubbleOverlayView(
         strokeWidth = density * 2.2f
     }
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = android.graphics.Typeface.create("sans", android.graphics.Typeface.NORMAL)
+        typeface = ResourcesCompat.getFont(context, R.font.dm_sans_variable)
+            ?: android.graphics.Typeface.DEFAULT
         textSize = density * 13f
     }
     private val bubbleRect = RectF()
@@ -53,6 +57,7 @@ internal class BubbleOverlayView(
     private val longPressAction = Runnable {
         if (!moved && bubbleState == BubbleState.Ready) {
             longPressActive = true
+            if (hapticsEnabled) performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             onPushToTalkStart()
         }
     }
@@ -66,6 +71,20 @@ internal class BubbleOverlayView(
     var bubbleOpacity: Float = 0.88f
         set(value) {
             field = value.coerceIn(0.55f, 1f)
+            invalidate()
+        }
+
+    var hapticsEnabled: Boolean = true
+
+    var darkTheme: Boolean = true
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    var idleExpanded: Boolean = false
+        set(value) {
+            field = value
             invalidate()
         }
 
@@ -136,6 +155,7 @@ internal class BubbleOverlayView(
 
     override fun performClick(): Boolean {
         super.performClick()
+        if (hapticsEnabled) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
         onExplicitTap()
         return true
     }
@@ -146,9 +166,9 @@ internal class BubbleOverlayView(
         bubbleRect.set(inset, inset, width - inset, height - inset)
         val rect = bubbleRect
         val radius = min(rect.height() / 2f, density * 22f)
-        fill.color = SURFACE
+        fill.color = surfaceColor
         fill.alpha = (255 * bubbleOpacity).toInt()
-        stroke.color = if (bubbleState is BubbleState.Recording) CLAY else OUTLINE
+        stroke.color = if (bubbleState is BubbleState.Recording) accentColor else outlineColor
         stroke.alpha = (255 * bubbleOpacity).toInt()
         canvas.drawRoundRect(rect, radius, radius, fill)
         canvas.drawRoundRect(rect, radius, radius, stroke)
@@ -159,29 +179,34 @@ internal class BubbleOverlayView(
             is BubbleState.Recording -> drawRecording(canvas, state)
             is BubbleState.Processing -> drawProcessing(canvas, state.stage)
             is BubbleState.Success -> drawSuccess(canvas, state.inserted)
-            is BubbleState.InsertionFallback -> drawMessage(canvas, "Copy text", WARNING)
-            is BubbleState.AccessibilityError -> drawMessage(canvas, "Insertion unavailable", ERROR)
-            is BubbleState.ServiceError -> drawMessage(canvas, "Dictation stopped", ERROR)
-            BubbleState.Reconnecting -> drawMessage(canvas, "Reconnecting", WARNING)
-            is BubbleState.Snoozed -> drawMessage(canvas, "Snoozed", SECONDARY)
+            is BubbleState.InsertionFallback -> drawMessage(canvas, "Copy text", warningColor)
+            is BubbleState.AccessibilityError -> drawMessage(canvas, "Insertion unavailable", errorColor)
+            is BubbleState.ServiceError -> drawMessage(canvas, "Dictation stopped", errorColor)
+            BubbleState.Reconnecting -> drawMessage(canvas, "Reconnecting", warningColor)
+            is BubbleState.Snoozed -> drawMessage(canvas, "Snoozed", secondaryColor)
         }
     }
 
     private fun drawReady(canvas: Canvas) {
-        val cx = width / 2f
+        val cx = if (idleExpanded) 28f * density else width / 2f
         val cy = height / 2f
-        line.color = CLAY
+        line.color = accentColor
         line.alpha = (255 * bubbleOpacity).toInt()
         readyMark.set(cx - 10f * density, cy - 15f * density, cx + 10f * density, cy + 7f * density)
         canvas.drawArc(readyMark, 0f, 180f, false, line)
         canvas.drawLine(cx, cy + 7f * density, cx, cy + 15f * density, line)
         canvas.drawLine(cx - 8f * density, cy + 15f * density, cx + 8f * density, cy + 15f * density, line)
+        if (idleExpanded) {
+            text.color = primaryColor
+            text.alpha = (255 * bubbleOpacity).toInt()
+            canvas.drawText("Ready", 52f * density, cy + 4f * density, text)
+        }
     }
 
     private fun drawRecording(canvas: Canvas, state: BubbleState.Recording) {
         val centerY = height / 2f
         val level = state.level.coerceIn(0f, 1f)
-        line.color = CLAY
+        line.color = accentColor
         line.alpha = (255 * bubbleOpacity).toInt()
         val heights = floatArrayOf(0.34f, 0.62f + level * 0.32f, 0.9f, 0.62f + level * 0.32f, 0.34f)
         heights.forEachIndexed { index, scale ->
@@ -189,10 +214,10 @@ internal class BubbleOverlayView(
             val half = (5f + 20f * scale) * density / 2f
             canvas.drawLine(x, centerY - half, x, centerY + half, line)
         }
-        text.color = PRIMARY
+        text.color = primaryColor
         text.alpha = (255 * bubbleOpacity).toInt()
         canvas.drawText(formatElapsed((SystemClock.elapsedRealtime() - state.startedAtElapsedMs).coerceAtLeast(0L) / 1_000L), 67f * density, centerY + 4f * density, text)
-        line.color = PRIMARY
+        line.color = primaryColor
         stopMark.set(width - 41f * density, centerY - 7f * density, width - 27f * density, centerY + 7f * density)
         canvas.drawRoundRect(stopMark, 3f * density, 3f * density, line)
         canvas.drawLine(width - 18f * density, centerY - 7f * density, width - 7f * density, centerY + 7f * density, line)
@@ -201,10 +226,10 @@ internal class BubbleOverlayView(
 
     private fun drawProcessing(canvas: Canvas, stage: ProcessingStage) {
         val centerY = height / 2f
-        text.color = PRIMARY
+        text.color = primaryColor
         text.alpha = (255 * bubbleOpacity).toInt()
         canvas.drawText(stageLabel(stage), 22f * density, centerY + 4f * density, text)
-        line.color = CLAY
+        line.color = accentColor
         line.alpha = (255 * bubbleOpacity).toInt()
         val x = width - 22f * density
         canvas.drawCircle(x, centerY, 3f * density, line)
@@ -212,11 +237,11 @@ internal class BubbleOverlayView(
 
     private fun drawSuccess(canvas: Canvas, inserted: Boolean) {
         val centerY = height / 2f
-        line.color = RESOLVED
+        line.color = resolvedColor
         line.alpha = (255 * bubbleOpacity).toInt()
         canvas.drawLine(17f * density, centerY, 23f * density, centerY + 6f * density, line)
         canvas.drawLine(23f * density, centerY + 6f * density, 34f * density, centerY - 7f * density, line)
-        text.color = PRIMARY
+        text.color = primaryColor
         text.alpha = (255 * bubbleOpacity).toInt()
         canvas.drawText(if (inserted) "Inserted" else "Text ready", 46f * density, centerY + 4f * density, text)
     }
@@ -242,7 +267,8 @@ internal class BubbleOverlayView(
     }
 
     private fun desiredWidthDp(state: BubbleState): Float = when (state) {
-        BubbleState.Hidden, BubbleState.Ready -> 56f
+        BubbleState.Hidden -> 56f
+        BubbleState.Ready -> if (idleExpanded) 132f else 56f
         is BubbleState.Recording -> 224f
         is BubbleState.Processing, is BubbleState.Success -> 168f
         is BubbleState.InsertionFallback, is BubbleState.AccessibilityError, is BubbleState.ServiceError -> 300f
@@ -255,16 +281,14 @@ internal class BubbleOverlayView(
         ProcessingStage.INSERTING -> "Inserting"
     }
 
-    private companion object {
-        const val SURFACE = 0xFF201D19.toInt()
-        const val OUTLINE = 0xFF3A342D.toInt()
-        const val PRIMARY = 0xFFF5F0E7.toInt()
-        const val SECONDARY = 0xFFBDB4A8.toInt()
-        const val CLAY = 0xFFD17A5A.toInt()
-        const val RESOLVED = 0xFFE4BC83.toInt()
-        const val WARNING = 0xFFE4BC83.toInt()
-        const val ERROR = 0xFFFFB3A7.toInt()
-    }
+    private val surfaceColor: Int get() = if (darkTheme) 0xFF080808.toInt() else 0xFFFFFFFF.toInt()
+    private val outlineColor: Int get() = if (darkTheme) 0xFF2C2C2C.toInt() else 0xFFD4D4D4.toInt()
+    private val primaryColor: Int get() = if (darkTheme) 0xFFFFFFFF.toInt() else 0xFF111111.toInt()
+    private val secondaryColor: Int get() = if (darkTheme) 0xFFA3A3A3.toInt() else 0xFF666666.toInt()
+    private val accentColor: Int get() = primaryColor
+    private val resolvedColor: Int get() = primaryColor
+    private val warningColor: Int get() = if (darkTheme) 0xFFFFB454.toInt() else 0xFF8A4B08.toInt()
+    private val errorColor: Int get() = if (darkTheme) 0xFFFF7A70.toInt() else 0xFFB42318.toInt()
 }
 
 private fun formatElapsed(seconds: Long): String = "%d:%02d".format(seconds / 60, seconds % 60)

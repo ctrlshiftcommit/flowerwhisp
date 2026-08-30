@@ -11,17 +11,20 @@ import androidx.core.content.ContextCompat
 
 data class CapabilitySnapshot(
     val accessibilityEnabled: Boolean,
+    val accessibilityConnected: Boolean = accessibilityEnabled,
     val overlayEnabled: Boolean,
     val microphoneGranted: Boolean,
     val notificationsGranted: Boolean,
 ) {
-    val canShowBubble: Boolean get() = accessibilityEnabled && overlayEnabled
+    val textInsertionReady: Boolean get() = accessibilityEnabled && accessibilityConnected
+    val canShowBubble: Boolean get() = textInsertionReady && overlayEnabled
     val canRecord: Boolean get() = canShowBubble && microphoneGranted
 }
 
 class CapabilityMonitor(private val context: Context) {
     fun snapshot(accessibilityConnected: Boolean = false): CapabilitySnapshot = CapabilitySnapshot(
         accessibilityEnabled = accessibilityConnected || isAccessibilityEnabled(),
+        accessibilityConnected = accessibilityConnected,
         overlayEnabled = Settings.canDrawOverlays(context),
         microphoneGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
         notificationsGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED &&

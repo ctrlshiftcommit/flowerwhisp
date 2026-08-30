@@ -2,6 +2,7 @@ package com.flowerwhisp.mobile.data
 
 import androidx.datastore.preferences.core.emptyPreferences
 import com.flowerwhisp.mobile.domain.model.AppSettings
+import com.flowerwhisp.mobile.domain.model.CleanupStatus
 import com.flowerwhisp.mobile.domain.model.Dictation
 import com.flowerwhisp.mobile.domain.model.DictationStatus
 import com.flowerwhisp.mobile.domain.model.DictionaryEntry
@@ -20,12 +21,15 @@ class RoomEntityMappingsTest {
             id = 42,
             createdAtEpochMs = 1234,
             originalText = "Original नमस्ते",
+            safeText = "Safe text",
             refinedText = "Refined text",
             durationMs = 987,
             language = LanguageMode.HINGLISH,
             status = DictationStatus.REFINEMENT_FAILED,
             isFavorite = true,
             recoveryAudioPath = "recordings/recovery.m4a",
+            cleanupStatus = CleanupStatus.FAILED,
+            cleanupError = "Provider unavailable",
         )
 
         assertEquals(source, source.toEntity().toDomain())
@@ -95,5 +99,9 @@ class RoomEntityMappingsTest {
         override suspend fun setFavorite(id: Long, favorite: Boolean) = Unit
 
         override suspend fun delete(id: Long) = Unit
+
+        override suspend fun getBefore(cutoffEpochMs: Long): List<DictationEntity> = emptyList()
+
+        override suspend fun deleteBefore(cutoffEpochMs: Long) = Unit
     }
 }

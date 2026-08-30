@@ -1,6 +1,7 @@
 package com.flowerwhisp.mobile.overlay
 
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.provider.Settings
@@ -9,8 +10,10 @@ import android.view.WindowInsets
 import android.view.WindowManager
 import com.flowerwhisp.mobile.domain.model.BubbleState
 import com.flowerwhisp.mobile.domain.model.AppSettings
+import com.flowerwhisp.mobile.domain.model.AppearanceMode
 import com.flowerwhisp.mobile.domain.model.BubbleOpacity
 import com.flowerwhisp.mobile.domain.model.BubbleSize
+import com.flowerwhisp.mobile.domain.model.IdleBehavior
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlin.math.max
@@ -36,6 +39,9 @@ class BubbleOverlayController(
     private var renderedState: BubbleState = BubbleState.Hidden
     private var bubbleScale = 0.88f
     private var bubbleOpacity = 0.88f
+    private var hapticsEnabled = true
+    private var idleExpanded = false
+    private var appearanceMode = AppearanceMode.DARK
 
     init {
         OverlayRuntime.update(OverlayStatus.Hidden("No supported field is focused"))
@@ -60,6 +66,7 @@ class BubbleOverlayController(
     }
 
     fun applyAppearance(settings: AppSettings) {
+        appearanceMode = settings.appearanceMode
         bubbleScale = when (settings.bubbleSize) {
             BubbleSize.SMALL -> 0.76f
             BubbleSize.MEDIUM -> 0.88f
@@ -70,9 +77,15 @@ class BubbleOverlayController(
             BubbleOpacity.STANDARD -> 0.88f
             BubbleOpacity.SOLID -> 1f
         }
-        view?.apply {
-            this.bubbleScale = this@BubbleOverlayController.bubbleScale
-            this.bubbleOpacity = this@BubbleOverlayController.bubbleOpacity
+        hapticsEnabled = settings.haptics
+        idleExpanded = settings.idleBehavior == IdleBehavior.FULL
+        view?.let { attached ->
+            attached.bubbleScale = bubbleScale
+            attached.bubbleOpacity = bubbleOpacity
+            attached.hapticsEnabled = hapticsEnabled
+            attached.idleExpanded = idleExpanded
+            attached.darkTheme = resolveDarkTheme()
+            resizeForState(attached)
         }
     }
 
@@ -83,6 +96,7 @@ class BubbleOverlayController(
     }
 
     fun onConfigurationChanged() {
+        view?.darkTheme = resolveDarkTheme()
         recalculatePosition()
     }
 
@@ -113,6 +127,9 @@ class BubbleOverlayController(
             it.bubbleState = renderedState
             it.bubbleScale = bubbleScale
             it.bubbleOpacity = bubbleOpacity
+            it.hapticsEnabled = hapticsEnabled
+            it.idleExpanded = idleExpanded
+            it.darkTheme = resolveDarkTheme()
         }
         val params = WindowManager.LayoutParams(
             bubbleView.desiredWidthPx().coerceAtLeast(hitTargetPx),
@@ -247,6 +264,15 @@ class BubbleOverlayController(
         }
         OverlayRuntime.update(OverlayStatus.Failure(operation, message))
         onFailure(message)
+    }
+
+    private fun resolveDarkTheme(): Boolean = when (appearanceMode) {
+        AppearanceMode.DARK -> true
+        AppearanceMode.LIGHT -> false
+        AppearanceMode.SYSTEM -> {
+            val nightMode = appContext.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
+            nightMode == Configuration.UI_MODE_NIGHT_YES
+        }
     }
 
     private companion object {

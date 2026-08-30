@@ -20,7 +20,7 @@ class GroqRefinementPayloadTest {
             style = WritingStyle.PROFESSIONAL,
             settings = AppSettings(
                 groqRefinementModel = "test-model",
-                refinementPrompt = "Preserve every fact.",
+                cleanupPromptLight = "Preserve every fact.",
             ),
             dictionary = listOf(
                 DictionaryEntry(
@@ -37,11 +37,16 @@ class GroqRefinementPayloadTest {
         val user = messages[1].jsonObject.getValue("content").jsonPrimitive.content
 
         assertEquals("test-model", root.getValue("model").jsonPrimitive.content)
-        assertEquals("send this to flower wisp", user)
+        val userPayload = Json.parseToJsonElement(user).jsonObject
+        assertEquals("send this to flower wisp", userPayload.getValue("sourceText").jsonPrimitive.content)
+        assertEquals("light", userPayload.getValue("cleanupLevel").jsonPrimitive.content)
         assertTrue(system.contains("Preserve every fact."))
         assertTrue(system.contains(WritingStyle.PROFESSIONAL.instruction))
-        assertTrue(system.contains("FlowerWhisp (context: flower wisp)"))
-        assertTrue(system.contains("/sig => Thanks, Tushar"))
+        assertTrue(system.contains("\"spoken\":\"FlowerWhisp\""))
+        assertTrue(system.contains("\"context\":\"flower wisp\""))
+        assertTrue(system.contains("\"protected\":true"))
+        assertTrue(system.contains("\"trigger\":\"/sig\""))
+        assertTrue(system.contains("\"expansion\":\"Thanks, Tushar\""))
         assertTrue(system.contains("\"status\":\"ok\"|\"unchanged\""))
     }
 }

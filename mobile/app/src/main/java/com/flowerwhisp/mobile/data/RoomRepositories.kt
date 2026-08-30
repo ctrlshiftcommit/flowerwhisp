@@ -1,13 +1,18 @@
 package com.flowerwhisp.mobile.data
 
+import com.flowerwhisp.mobile.domain.model.CleanupStatus
+import com.flowerwhisp.mobile.domain.model.DEFAULT_TRANSFORMS
 import com.flowerwhisp.mobile.domain.model.Dictation
 import com.flowerwhisp.mobile.domain.model.DictationStatus
 import com.flowerwhisp.mobile.domain.model.DictionaryEntry
 import com.flowerwhisp.mobile.domain.model.Snippet
+import com.flowerwhisp.mobile.domain.model.RetentionMode
+import com.flowerwhisp.mobile.domain.model.TransformProfile
 import com.flowerwhisp.mobile.domain.ports.DictionaryRepository
 import com.flowerwhisp.mobile.domain.ports.HistoryRepository
 import com.flowerwhisp.mobile.domain.ports.SettingsRepository
 import com.flowerwhisp.mobile.domain.ports.SnippetRepository
+import com.flowerwhisp.mobile.domain.ports.TransformRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -20,10 +25,14 @@ import kotlinx.coroutines.flow.map
 class RoomHistoryRepository(
     private val dao: DictationDao,
     private val privacyModeEnabled: suspend () -> Boolean = { false },
+    private val retentionMode: suspend () -> RetentionMode = {
+        if (privacyModeEnabled()) RetentionMode.NEVER else RetentionMode.FOREVER
+    },
 ) : HistoryRepository {
     constructor(dao: DictationDao, settingsRepository: SettingsRepository) : this(
         dao = dao,
         privacyModeEnabled = { settingsRepository.settings.first().privacyMode },
+        retentionMode = { settingsRepository.settings.first().retentionMode },
     )
 
     override fun observeAll(): Flow<List<Dictation>> = dao.observeAll().map { rows ->
@@ -34,7 +43,13 @@ class RoomHistoryRepository(
         dao.search(query.trim()).map { rows -> rows.map(DictationEntity::toDomain) }
 
     override suspend fun upsert(dictation: Dictation): Long =
-        if (privacyModeEnabled() && dictation.status == DictationStatus.COMPLETE) {
+        if (
+            retentionMode() == RetentionMode.NEVER &&
+            dictation.id == 0L &&
+            dictation.status == DictationStatus.COMPLETE &&
+            dictation.cleanupStatus != CleanupStatus.FAILED &&
+            dictation.recoveryAudioPath == null
+        ) {
             dictation.id
         } else {
             dao.upsert(dictation.toEntity())
@@ -48,6 +63,12 @@ class RoomHistoryRepository(
 
     override suspend fun delete(id: Long) {
         dao.delete(id)
+    }
+
+    suspend fun pruneBefore(cutoffEpochMs: Long): List<String> {
+        val recoveryPaths = dao.getBefore(cutoffEpochMs).mapNotNull { it.recoveryAudioPath }
+        dao.deleteBefore(cutoffEpochMs)
+        return recoveryPaths
     }
 }
 
@@ -78,5 +99,24 @@ class RoomSnippetRepository(
 
     override suspend fun delete(id: Long) {
         dao.delete(id)
+    }
+}
+
+class RoomTransformRepository(
+    private val dao: TransformProfileDao,
+) : TransformRepository {
+    override fun observeAll(): Flow<List<TransformProfile>> = dao.observeAll().map { rows ->
+        rows.map(TransformProfileEntity::toDomain)
+    }
+
+    override suspend fun upsert(transform: TransformProfile): Long = dao.upsert(transform.toEntity())
+
+    override suspend fun delete(id: Long) {
+        dao.deleteCustom(id)
+    }
+
+    suspend fun ensureDefaults() {
+        if (dao.count() != 0) return
+        DEFAULT_TRANSFORMS.forEach { transform -> dao.upsert(transform.toEntity()) }
     }
 }

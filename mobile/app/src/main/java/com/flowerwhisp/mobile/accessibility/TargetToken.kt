@@ -22,20 +22,30 @@ internal data class TargetIdentity(
     val viewIdResourceName: String?,
 )
 
+internal data class TargetBounds(
+    val left: Int,
+    val top: Int,
+    val right: Int,
+    val bottom: Int,
+)
+
 /** Tracks focus generations without retaining AccessibilityNodeInfo instances. */
 internal class TargetGenerationTracker {
     private var identity: TargetIdentity? = null
     private var platformUniqueId: String? = null
+    private var bounds: TargetBounds? = null
     private var generation: Long = 0
 
     fun observe(
         nextIdentity: TargetIdentity?,
         nextPlatformUniqueId: String?,
         explicitFocusEvent: Boolean,
+        nextBounds: TargetBounds? = null,
     ): TargetToken? {
         if (nextIdentity == null) {
             identity = null
             platformUniqueId = null
+            bounds = null
             generation += 1
             return null
         }
@@ -44,16 +54,23 @@ internal class TargetGenerationTracker {
         val uniqueIdChanged = platformUniqueId != null &&
             nextPlatformUniqueId != null &&
             platformUniqueId != nextPlatformUniqueId
-        val ambiguousExplicitRefocus = explicitFocusEvent &&
+        val anonymousFieldChanged = explicitFocusEvent &&
             !identityChanged &&
             platformUniqueId == null &&
-            nextPlatformUniqueId == null
+            nextPlatformUniqueId == null &&
+            bounds != null &&
+            nextBounds != null &&
+            bounds != nextBounds
 
-        if (identity == null || identityChanged || uniqueIdChanged || ambiguousExplicitRefocus) {
+        // Duplicate TYPE_VIEW_FOCUSED events are common when an overlay is tapped.
+        // Bounds are consulted only for an explicit focus change, so a field
+        // resizing after insertion does not invalidate its frozen generation.
+        if (identity == null || identityChanged || uniqueIdChanged || anonymousFieldChanged) {
             generation += 1
         }
         identity = nextIdentity
         platformUniqueId = nextPlatformUniqueId
+        bounds = nextBounds
         return TargetToken(
             packageName = nextIdentity.packageName,
             windowId = nextIdentity.windowId,

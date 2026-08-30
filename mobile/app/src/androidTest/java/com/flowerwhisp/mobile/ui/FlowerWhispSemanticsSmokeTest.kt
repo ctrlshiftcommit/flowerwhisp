@@ -38,10 +38,11 @@ class FlowerWhispSemanticsSmokeTest {
             )
         }
 
-        composeRule.onNodeWithText("Ready to dictate").assertIsDisplayed()
+        composeRule.onNodeWithText("Ready").assertIsDisplayed()
         composeRule.onNode(hasContentDescription("FlowerWhisp ready. Start dictation"), useUnmergedTree = true)
             .assertIsDisplayed()
             .assertHasClickAction()
+        composeRule.onNodeWithTag("open-navigation").assertHasClickAction().performClick()
         composeRule.onNodeWithTag("nav-settings").assertHasClickAction().performClick()
         composeRule.runOnIdle { assertEquals(FlowerWhispDestination.SETTINGS, destination) }
     }

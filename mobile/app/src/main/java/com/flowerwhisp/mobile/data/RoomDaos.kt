@@ -33,6 +33,12 @@ interface DictationDao {
 
     @Query("DELETE FROM dictations WHERE id = :id")
     suspend fun delete(id: Long)
+
+    @Query("SELECT * FROM dictations WHERE createdAtEpochMs < :cutoffEpochMs")
+    suspend fun getBefore(cutoffEpochMs: Long): List<DictationEntity>
+
+    @Query("DELETE FROM dictations WHERE createdAtEpochMs < :cutoffEpochMs")
+    suspend fun deleteBefore(cutoffEpochMs: Long)
 }
 
 @Dao
@@ -57,4 +63,19 @@ interface SnippetDao {
 
     @Query("DELETE FROM snippets WHERE id = :id")
     suspend fun delete(id: Long)
+}
+
+@Dao
+interface TransformProfileDao {
+    @Query("SELECT * FROM transform_profiles ORDER BY builtIn DESC, name COLLATE NOCASE ASC, id ASC")
+    fun observeAll(): Flow<List<TransformProfileEntity>>
+
+    @Query("SELECT COUNT(*) FROM transform_profiles")
+    suspend fun count(): Int
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(transform: TransformProfileEntity): Long
+
+    @Query("DELETE FROM transform_profiles WHERE id = :id AND builtIn = 0")
+    suspend fun deleteCustom(id: Long)
 }

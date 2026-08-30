@@ -23,6 +23,9 @@ class GroqTranscriptionEngine(
         val model = settings.groqTranscriptionModel.trim()
             .takeIf(String::isNotEmpty)
             ?: throw GroqEngineException("No Groq transcription model is configured")
+        if (model !in GroqApiSupport.TRANSCRIPTION_MODELS) {
+            throw GroqEngineException("The selected Groq transcription model is unavailable")
+        }
         val apiKey = settingsRepository.groqApiKey()?.trim()
             ?.takeIf(String::isNotEmpty)
             ?: throw GroqEngineException("Add a Groq API key before using cloud transcription")

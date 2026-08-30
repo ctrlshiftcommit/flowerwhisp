@@ -15,11 +15,16 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.flowerwhisp.mobile.domain.model.AppSettings
+import com.flowerwhisp.mobile.domain.model.AppearanceMode
 import com.flowerwhisp.mobile.domain.model.BubbleOpacity
 import com.flowerwhisp.mobile.domain.model.BubbleSize
-import com.flowerwhisp.mobile.domain.model.DEFAULT_REFINEMENT_PROMPT
+import com.flowerwhisp.mobile.domain.model.CleanupLevel
+import com.flowerwhisp.mobile.domain.model.DEFAULT_CLEANUP_PROMPT_LIGHT
+import com.flowerwhisp.mobile.domain.model.DEFAULT_CLEANUP_PROMPT_MEDIUM
+import com.flowerwhisp.mobile.domain.model.DEFAULT_CLEANUP_PROMPT_NONE
 import com.flowerwhisp.mobile.domain.model.IdleBehavior
 import com.flowerwhisp.mobile.domain.model.LanguageMode
+import com.flowerwhisp.mobile.domain.model.RetentionMode
 import com.flowerwhisp.mobile.domain.model.WritingStyle
 import com.flowerwhisp.mobile.domain.ports.SettingsRepository
 import java.nio.charset.StandardCharsets
@@ -42,15 +47,32 @@ private object SettingsKeys {
     val onboardingStep = intPreferencesKey("onboarding_step")
     val language = stringPreferencesKey("language")
     val writingStyle = stringPreferencesKey("writing_style")
+    val personalWritingStyle = stringPreferencesKey("personal_writing_style")
+    val workWritingStyle = stringPreferencesKey("work_writing_style")
+    val emailWritingStyle = stringPreferencesKey("email_writing_style")
+    val otherWritingStyle = stringPreferencesKey("other_writing_style")
+    val personalStyleInstructions = stringPreferencesKey("personal_style_instructions")
+    val workStyleInstructions = stringPreferencesKey("work_style_instructions")
+    val emailStyleInstructions = stringPreferencesKey("email_style_instructions")
+    val otherStyleInstructions = stringPreferencesKey("other_style_instructions")
     val autoPunctuation = booleanPreferencesKey("auto_punctuation")
     val removeFillers = booleanPreferencesKey("remove_fillers")
     val spokenCorrections = booleanPreferencesKey("spoken_corrections")
     val aiRefinement = booleanPreferencesKey("ai_refinement")
     val privacyMode = booleanPreferencesKey("privacy_mode")
+    val cleanupLevel = stringPreferencesKey("cleanup_level")
+    val cleanupPromptNone = stringPreferencesKey("cleanup_prompt_none")
+    val cleanupPromptLight = stringPreferencesKey("cleanup_prompt_light")
+    val cleanupPromptMedium = stringPreferencesKey("cleanup_prompt_medium")
+    val retentionMode = stringPreferencesKey("retention_mode")
+    val appearanceMode = stringPreferencesKey("appearance_mode")
+    val scratchpad = stringPreferencesKey("scratchpad")
     val bubbleSize = stringPreferencesKey("bubble_size")
     val bubbleOpacity = stringPreferencesKey("bubble_opacity")
     val idleBehavior = stringPreferencesKey("idle_behavior")
     val haptics = booleanPreferencesKey("haptics")
+    val playSounds = booleanPreferencesKey("play_sounds")
+    val muteMusicWhileDictating = booleanPreferencesKey("mute_music_while_dictating")
     val reduceMotion = booleanPreferencesKey("reduce_motion")
     val bubbleVerticalFraction = floatPreferencesKey("bubble_vertical_fraction")
     val snoozedUntilEpochMs = longPreferencesKey("snoozed_until_epoch_ms")
@@ -61,59 +83,120 @@ private object SettingsKeys {
     val encryptedGroqApiKey = stringPreferencesKey("encrypted_groq_api_key")
 }
 
-internal fun Preferences.toAppSettings(): AppSettings = AppSettings(
-    onboardingComplete = this[SettingsKeys.onboardingComplete] ?: false,
-    onboardingStep = this[SettingsKeys.onboardingStep] ?: 0,
-    language = this[SettingsKeys.language].toStoredLanguageMode(),
-    writingStyle = this[SettingsKeys.writingStyle].toWritingStyle(),
-    autoPunctuation = this[SettingsKeys.autoPunctuation] ?: true,
-    removeFillers = this[SettingsKeys.removeFillers] ?: true,
-    spokenCorrections = this[SettingsKeys.spokenCorrections] ?: true,
-    aiRefinement = this[SettingsKeys.aiRefinement] ?: true,
-    privacyMode = this[SettingsKeys.privacyMode] ?: false,
-    bubbleSize = this[SettingsKeys.bubbleSize].toBubbleSize(),
-    bubbleOpacity = this[SettingsKeys.bubbleOpacity].toBubbleOpacity(),
-    idleBehavior = this[SettingsKeys.idleBehavior].toIdleBehavior(),
-    haptics = this[SettingsKeys.haptics] ?: true,
-    reduceMotion = this[SettingsKeys.reduceMotion] ?: false,
-    bubbleVerticalFraction = this[SettingsKeys.bubbleVerticalFraction] ?: 0.68f,
-    snoozedUntilEpochMs = this[SettingsKeys.snoozedUntilEpochMs] ?: 0L,
-    useMockEngines = this[SettingsKeys.useMockEngines] ?: true,
-    groqTranscriptionModel = this[SettingsKeys.groqTranscriptionModel]
-        ?: "whisper-large-v3-turbo",
-    groqRefinementModel = this[SettingsKeys.groqRefinementModel]
-        ?: "llama-3.3-70b-versatile",
-    refinementPrompt = this[SettingsKeys.refinementPrompt] ?: DEFAULT_REFINEMENT_PROMPT,
-)
+internal fun Preferences.toAppSettings(): AppSettings {
+    val cleanupLevel = this[SettingsKeys.cleanupLevel].toCleanupLevel(
+        legacyEnabled = this[SettingsKeys.aiRefinement] ?: true,
+    )
+    val retentionMode = this[SettingsKeys.retentionMode].toRetentionMode(
+        legacyPrivate = this[SettingsKeys.privacyMode] ?: false,
+    )
+    val lightPrompt = this[SettingsKeys.cleanupPromptLight]
+        ?: this[SettingsKeys.refinementPrompt]
+        ?: DEFAULT_CLEANUP_PROMPT_LIGHT
+    return AppSettings(
+        onboardingComplete = this[SettingsKeys.onboardingComplete] ?: false,
+        onboardingStep = this[SettingsKeys.onboardingStep] ?: 0,
+        language = this[SettingsKeys.language].toStoredLanguageMode(),
+        writingStyle = this[SettingsKeys.writingStyle].toWritingStyle(),
+        personalWritingStyle = this[SettingsKeys.personalWritingStyle].toWritingStyle(WritingStyle.CASUAL),
+        workWritingStyle = this[SettingsKeys.workWritingStyle].toWritingStyle(WritingStyle.PROFESSIONAL),
+        emailWritingStyle = this[SettingsKeys.emailWritingStyle].toWritingStyle(WritingStyle.PROFESSIONAL),
+        otherWritingStyle = this[SettingsKeys.otherWritingStyle].toWritingStyle(WritingStyle.NATURAL),
+        personalStyleInstructions = this[SettingsKeys.personalStyleInstructions].orEmpty(),
+        workStyleInstructions = this[SettingsKeys.workStyleInstructions].orEmpty(),
+        emailStyleInstructions = this[SettingsKeys.emailStyleInstructions].orEmpty(),
+        otherStyleInstructions = this[SettingsKeys.otherStyleInstructions].orEmpty(),
+        autoPunctuation = this[SettingsKeys.autoPunctuation] ?: true,
+        removeFillers = this[SettingsKeys.removeFillers] ?: true,
+        spokenCorrections = this[SettingsKeys.spokenCorrections] ?: true,
+        aiRefinement = cleanupLevel != CleanupLevel.NONE,
+        privacyMode = retentionMode == RetentionMode.NEVER,
+        cleanupLevel = cleanupLevel,
+        cleanupPromptNone = this[SettingsKeys.cleanupPromptNone] ?: DEFAULT_CLEANUP_PROMPT_NONE,
+        cleanupPromptLight = lightPrompt,
+        cleanupPromptMedium = this[SettingsKeys.cleanupPromptMedium] ?: DEFAULT_CLEANUP_PROMPT_MEDIUM,
+        retentionMode = retentionMode,
+        appearanceMode = this[SettingsKeys.appearanceMode].toAppearanceMode(),
+        scratchpad = this[SettingsKeys.scratchpad].orEmpty(),
+        bubbleSize = this[SettingsKeys.bubbleSize].toBubbleSize(),
+        bubbleOpacity = this[SettingsKeys.bubbleOpacity].toBubbleOpacity(),
+        idleBehavior = this[SettingsKeys.idleBehavior].toIdleBehavior(),
+        haptics = this[SettingsKeys.haptics] ?: true,
+        playSounds = this[SettingsKeys.playSounds] ?: false,
+        muteMusicWhileDictating = this[SettingsKeys.muteMusicWhileDictating] ?: false,
+        reduceMotion = this[SettingsKeys.reduceMotion] ?: false,
+        bubbleVerticalFraction = this[SettingsKeys.bubbleVerticalFraction] ?: 0.68f,
+        snoozedUntilEpochMs = this[SettingsKeys.snoozedUntilEpochMs] ?: 0L,
+        // Earlier development builds persisted mock mode as the default. Never carry that
+        // fake provider into a normal upgraded install.
+        useMockEngines = false,
+        groqTranscriptionModel = this[SettingsKeys.groqTranscriptionModel]
+            ?: "whisper-large-v3",
+        groqRefinementModel = when (val stored = this[SettingsKeys.groqRefinementModel]) {
+            null -> "openai/gpt-oss-20b"
+            "llama-3.3-70b-versatile" -> "openai/gpt-oss-120b"
+            else -> stored
+        },
+        refinementPrompt = lightPrompt,
+    )
+}
 
 private fun MutablePreferences.applySettings(settings: AppSettings) {
     this[SettingsKeys.onboardingComplete] = settings.onboardingComplete
-    this[SettingsKeys.onboardingStep] = settings.onboardingStep.coerceIn(0, 4)
+    this[SettingsKeys.onboardingStep] = settings.onboardingStep.coerceIn(0, 5)
     this[SettingsKeys.language] = settings.language.name
     this[SettingsKeys.writingStyle] = settings.writingStyle.name
+    this[SettingsKeys.personalWritingStyle] = settings.personalWritingStyle.name
+    this[SettingsKeys.workWritingStyle] = settings.workWritingStyle.name
+    this[SettingsKeys.emailWritingStyle] = settings.emailWritingStyle.name
+    this[SettingsKeys.otherWritingStyle] = settings.otherWritingStyle.name
+    this[SettingsKeys.personalStyleInstructions] = settings.personalStyleInstructions
+    this[SettingsKeys.workStyleInstructions] = settings.workStyleInstructions
+    this[SettingsKeys.emailStyleInstructions] = settings.emailStyleInstructions
+    this[SettingsKeys.otherStyleInstructions] = settings.otherStyleInstructions
     this[SettingsKeys.autoPunctuation] = settings.autoPunctuation
     this[SettingsKeys.removeFillers] = settings.removeFillers
     this[SettingsKeys.spokenCorrections] = settings.spokenCorrections
-    this[SettingsKeys.aiRefinement] = settings.aiRefinement
-    this[SettingsKeys.privacyMode] = settings.privacyMode
+    this[SettingsKeys.aiRefinement] = settings.cleanupLevel != CleanupLevel.NONE
+    this[SettingsKeys.privacyMode] = settings.retentionMode == RetentionMode.NEVER
+    this[SettingsKeys.cleanupLevel] = settings.cleanupLevel.name
+    this[SettingsKeys.cleanupPromptNone] = settings.cleanupPromptNone
+    this[SettingsKeys.cleanupPromptLight] = settings.cleanupPromptLight
+    this[SettingsKeys.cleanupPromptMedium] = settings.cleanupPromptMedium
+    this[SettingsKeys.retentionMode] = settings.retentionMode.name
+    this[SettingsKeys.appearanceMode] = settings.appearanceMode.name
+    this[SettingsKeys.scratchpad] = settings.scratchpad
     this[SettingsKeys.bubbleSize] = settings.bubbleSize.name
     this[SettingsKeys.bubbleOpacity] = settings.bubbleOpacity.name
     this[SettingsKeys.idleBehavior] = settings.idleBehavior.name
     this[SettingsKeys.haptics] = settings.haptics
+    this[SettingsKeys.playSounds] = settings.playSounds
+    this[SettingsKeys.muteMusicWhileDictating] = settings.muteMusicWhileDictating
     this[SettingsKeys.reduceMotion] = settings.reduceMotion
     this[SettingsKeys.bubbleVerticalFraction] = settings.bubbleVerticalFraction
     this[SettingsKeys.snoozedUntilEpochMs] = settings.snoozedUntilEpochMs
     this[SettingsKeys.useMockEngines] = settings.useMockEngines
     this[SettingsKeys.groqTranscriptionModel] = settings.groqTranscriptionModel
     this[SettingsKeys.groqRefinementModel] = settings.groqRefinementModel
-    this[SettingsKeys.refinementPrompt] = settings.refinementPrompt
+    this[SettingsKeys.refinementPrompt] = settings.cleanupPromptLight
 }
 
 private fun String?.toStoredLanguageMode(): LanguageMode =
     LanguageMode.entries.firstOrNull { it.name == this } ?: LanguageMode.AUTO
 
-private fun String?.toWritingStyle(): WritingStyle =
-    WritingStyle.entries.firstOrNull { it.name == this } ?: WritingStyle.NATURAL
+private fun String?.toWritingStyle(fallback: WritingStyle = WritingStyle.NATURAL): WritingStyle =
+    WritingStyle.entries.firstOrNull { it.name == this } ?: fallback
+
+private fun String?.toCleanupLevel(legacyEnabled: Boolean): CleanupLevel =
+    CleanupLevel.entries.firstOrNull { it.name == this }
+        ?: if (legacyEnabled) CleanupLevel.LIGHT else CleanupLevel.NONE
+
+private fun String?.toRetentionMode(legacyPrivate: Boolean): RetentionMode =
+    RetentionMode.entries.firstOrNull { it.name == this }
+        ?: if (legacyPrivate) RetentionMode.NEVER else RetentionMode.FOREVER
+
+private fun String?.toAppearanceMode(): AppearanceMode =
+    AppearanceMode.entries.firstOrNull { it.name == this } ?: AppearanceMode.DARK
 
 private fun String?.toBubbleSize(): BubbleSize =
     BubbleSize.entries.firstOrNull { it.name == this } ?: BubbleSize.MEDIUM

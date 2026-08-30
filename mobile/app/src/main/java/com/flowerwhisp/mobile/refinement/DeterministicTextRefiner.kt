@@ -31,19 +31,19 @@ internal object DeterministicTextRefiner {
     private fun applySnippets(source: String, snippets: List<Snippet>): String =
         snippets
             .asSequence()
-            .filter { it.trigger.isNotBlank() && it.expansion.isNotBlank() }
+            .filter { it.enabled && it.trigger.isNotBlank() && it.expansion.isNotBlank() }
             .sortedByDescending { it.trigger.length }
             .fold(source) { text, snippet ->
-                exactPhrase(snippet.trigger).replace(text, snippet.expansion)
+                exactPhrase(snippet.trigger).replace(text) { snippet.expansion }
             }
 
     private fun applyDictionary(source: String, dictionary: List<DictionaryEntry>): String =
         dictionary
             .asSequence()
-            .filter { it.spelling.isNotBlank() && it.replacement.isNotBlank() }
+            .filter { it.enabled && it.spelling.isNotBlank() && it.replacement.isNotBlank() }
             .sortedByDescending { it.spelling.length }
             .fold(source) { text, entry ->
-                exactPhrase(entry.spelling).replace(text, entry.replacement)
+                exactPhrase(entry.spelling).replace(text) { entry.replacement }
             }
 
     private fun removeFillers(source: String): String = source

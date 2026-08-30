@@ -32,6 +32,14 @@ interface TextRefinementEngine {
     ): String
 }
 
+interface TextTransformEngine {
+    suspend fun transform(
+        source: String,
+        instructions: String,
+        settings: AppSettings,
+    ): String
+}
+
 sealed interface InsertionResult {
     data object Inserted : InsertionResult
     data class ClipboardFallback(val text: String, val reason: String) : InsertionResult

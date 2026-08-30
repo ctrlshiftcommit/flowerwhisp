@@ -1,9 +1,8 @@
 package com.flowerwhisp.mobile.accessibility
 
 import android.accessibilityservice.AccessibilityService
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.res.Configuration
+import android.graphics.Rect
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -12,6 +11,7 @@ import com.flowerwhisp.mobile.domain.ports.TextInsertionGateway
 import com.flowerwhisp.mobile.overlay.BubbleOverlayController
 import com.flowerwhisp.mobile.overlay.SettingsBubblePositionStore
 import com.flowerwhisp.mobile.platform.CapabilityMonitor
+import com.flowerwhisp.mobile.platform.SensitiveClipboard
 import com.flowerwhisp.mobile.service.DictationDependencyRegistry
 import com.flowerwhisp.mobile.service.DictationRuntime
 import com.flowerwhisp.mobile.service.DictationService
@@ -35,6 +35,7 @@ class FlowerWhispAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         bridge = WeakReference(this)
+        connectionState.value = true
         capabilityMonitor = CapabilityMonitor(this)
         val settingsRepository = DictationDependencyRegistry.peek()?.settingsRepository
         val positionStore = settingsRepository?.let(::SettingsBubblePositionStore)
@@ -100,6 +101,7 @@ class FlowerWhispAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         if (bridge?.get() === this) bridge = null
+        connectionState.value = false
         fieldState.value = FocusedField()
         DictationRuntime.onBubbleAvailabilityChanged(false)
         overlayController?.destroy()
@@ -162,23 +164,18 @@ class FlowerWhispAccessibilityService : AccessibilityService() {
             nextIdentity = identity,
             nextPlatformUniqueId = node?.uniqueId,
             explicitFocusEvent = explicitFocusEvent,
+            nextBounds = node?.toTargetBounds(),
         )
         if (node == null || identity == null || token == null) return FocusedField()
 
         val packageName = identity.packageName
         if (packageName.isBlank()) return FocusedField(reason = "The focused field has no package identity")
         val supportsSetText = node.actionList.any { it.id == AccessibilityNodeInfo.ACTION_SET_TEXT }
-        if (!supportsSetText) {
-            return FocusedField(
-                packageName = packageName,
-                reason = "The focused app does not expose editable text insertion",
-            )
-        }
 
         return when (
             val decision = SensitiveFieldPolicy.evaluate(
                 FieldMetadata(
-                    editable = node.isEditable,
+                    editable = node.isEditable || supportsSetText,
                     enabled = node.isEnabled,
                     visible = node.isVisibleToUser,
                     password = node.isPassword,
@@ -215,6 +212,11 @@ class FlowerWhispAccessibilityService : AccessibilityService() {
         )
     }
 
+    private fun AccessibilityNodeInfo.toTargetBounds(): TargetBounds {
+        val bounds = Rect().also(::getBoundsInScreen)
+        return TargetBounds(bounds.left, bounds.top, bounds.right, bounds.bottom)
+    }
+
     private fun captureTargetInternal(): TargetCaptureResult {
         val focused = describe(currentFocusedNode(), explicitFocusEvent = false)
         fieldState.value = focused
@@ -246,6 +248,9 @@ class FlowerWhispAccessibilityService : AccessibilityService() {
         val initialField = describe(initialNode, explicitFocusEvent = false)
         if (!initialField.available || !token.matches(initialField.token)) {
             return clipboardFallback(text, "The focused field changed while FlowerWhisp was processing")
+        }
+        if (initialNode.actionList.none { it.id == AccessibilityNodeInfo.ACTION_SET_TEXT }) {
+            return clipboardFallback(text, "The focused field does not support direct insertion")
         }
 
         // Field text is read only here to compose the local cursor-aware replacement. It is never retained or logged.
@@ -311,10 +316,7 @@ class FlowerWhispAccessibilityService : AccessibilityService() {
     }
 
     private fun clipboardFallback(text: String, reason: String): TargetInsertionOutcome.ClipboardFallback {
-        val copied = runCatching {
-            getSystemService(ClipboardManager::class.java)
-                .setPrimaryClip(ClipData.newPlainText("FlowerWhisp dictation", text))
-        }.isSuccess
+        val copied = SensitiveClipboard.copy(this, text)
         val honestReason = if (copied) reason else "$reason. FlowerWhisp could not copy the text"
         return TargetInsertionOutcome.ClipboardFallback(text, honestReason, copied)
     }
@@ -322,7 +324,9 @@ class FlowerWhispAccessibilityService : AccessibilityService() {
     companion object {
         private var bridge: WeakReference<FlowerWhispAccessibilityService>? = null
         private val fieldState = kotlinx.coroutines.flow.MutableStateFlow(FocusedField())
+        private val connectionState = kotlinx.coroutines.flow.MutableStateFlow(false)
         val focusedField = fieldState.asStateFlow()
+        val connected = connectionState.asStateFlow()
 
         val targetAwareGateway: TargetAwareInsertionGateway = object : TargetAwareInsertionGateway {
             override fun captureTarget(): TargetCaptureResult = bridge?.get()?.captureTargetInternal()

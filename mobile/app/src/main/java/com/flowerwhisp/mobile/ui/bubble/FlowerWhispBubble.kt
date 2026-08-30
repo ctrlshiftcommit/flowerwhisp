@@ -13,14 +13,15 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -33,22 +34,21 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Stop
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -58,14 +58,15 @@ import com.flowerwhisp.mobile.domain.model.BubbleState
 import com.flowerwhisp.mobile.domain.model.ProcessingStage
 import com.flowerwhisp.mobile.ui.theme.Clay
 import com.flowerwhisp.mobile.ui.theme.Error
-import com.flowerwhisp.mobile.ui.theme.Ink
 import com.flowerwhisp.mobile.ui.theme.Outline
 import com.flowerwhisp.mobile.ui.theme.PrimaryText
 import com.flowerwhisp.mobile.ui.theme.Resolved
 import com.flowerwhisp.mobile.ui.theme.SecondaryText
 import com.flowerwhisp.mobile.ui.theme.SurfaceElevated
-import com.flowerwhisp.mobile.ui.theme.SurfaceInk
 import com.flowerwhisp.mobile.ui.theme.Warning
+import com.flowerwhisp.mobile.ui.components.CompactAction
+import com.flowerwhisp.mobile.ui.components.MinimumIconButton
+import com.flowerwhisp.mobile.ui.components.whispSurface
 import kotlin.math.roundToInt
 
 @Composable
@@ -79,8 +80,20 @@ fun FlowerWhispBubble(
     onCopy: (String) -> Unit,
     onOpenApp: () -> Unit,
     reduceMotion: Boolean = false,
+    hapticsEnabled: Boolean = true,
 ) {
     if (state is BubbleState.Hidden) return
+    val hapticFeedback = LocalHapticFeedback.current
+    val withFeedback: (() -> Unit) -> () -> Unit = { action ->
+        {
+            if (hapticsEnabled) hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+            action()
+        }
+    }
+    val copyWithFeedback: (String) -> Unit = { value ->
+        if (hapticsEnabled) hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+        onCopy(value)
+    }
 
     AnimatedContent(
         targetState = state,
@@ -91,40 +104,37 @@ fun FlowerWhispBubble(
         },
         label = "bubble-state",
     ) { current ->
-        Surface(
-            color = SurfaceElevated,
-            contentColor = PrimaryText,
-            shape = RoundedCornerShape(22.dp),
-            border = androidx.compose.foundation.BorderStroke(
-                1.dp,
-                if (current is BubbleState.Recording) Clay.copy(alpha = 0.72f) else Outline,
-            ),
-            shadowElevation = if (current is BubbleState.Ready) 2.dp else 7.dp,
+        Box(
             modifier = Modifier
                 .defaultMinSize(minWidth = 64.dp, minHeight = 56.dp)
+                .whispSurface(
+                    color = SurfaceElevated,
+                    shape = RoundedCornerShape(22.dp),
+                    borderColor = if (current is BubbleState.Recording) Clay.copy(alpha = 0.72f) else Outline,
+                )
                 .semantics { contentDescription = bubbleDescription(current, elapsedSeconds) },
         ) {
             when (current) {
                 BubbleState.Hidden -> Unit
-                BubbleState.Ready -> ReadyBubble(onStart, reduceMotion)
-                is BubbleState.Recording -> RecordingBubble(current.level, elapsedSeconds, onFinish, onCancel)
-                is BubbleState.Processing -> ProcessingBubble(current.stage, onCancel, reduceMotion)
-                is BubbleState.Success -> SuccessBubble(current.inserted, onOpenApp)
-                is BubbleState.InsertionFallback -> FallbackBubble(current.text, onCopy, onOpenApp)
+                BubbleState.Ready -> ReadyBubble(withFeedback(onStart), reduceMotion)
+                is BubbleState.Recording -> RecordingBubble(current.level, elapsedSeconds, withFeedback(onFinish), withFeedback(onCancel))
+                is BubbleState.Processing -> ProcessingBubble(current.stage, withFeedback(onCancel), reduceMotion)
+                is BubbleState.Success -> SuccessBubble(current.inserted, withFeedback(onOpenApp))
+                is BubbleState.InsertionFallback -> FallbackBubble(current.text, copyWithFeedback, withFeedback(onOpenApp))
                 is BubbleState.AccessibilityError -> ErrorBubble(
                     title = "Insertion unavailable",
                     message = current.message,
-                    onRetry = onRetry,
-                    onOpenApp = onOpenApp,
+                    onRetry = withFeedback(onRetry),
+                    onOpenApp = withFeedback(onOpenApp),
                 )
                 is BubbleState.ServiceError -> ErrorBubble(
                     title = if (current.recoverableRecordingId != null) "Recording saved" else "Dictation stopped",
                     message = current.message,
-                    onRetry = onRetry,
-                    onOpenApp = onOpenApp,
+                    onRetry = withFeedback(onRetry),
+                    onOpenApp = withFeedback(onOpenApp),
                 )
-                BubbleState.Reconnecting -> ReconnectingBubble(onRetry, onCancel)
-                is BubbleState.Snoozed -> SnoozedBubble(onOpenApp)
+                BubbleState.Reconnecting -> ReconnectingBubble(withFeedback(onRetry), withFeedback(onCancel))
+                is BubbleState.Snoozed -> SnoozedBubble(withFeedback(onOpenApp))
             }
         }
     }
@@ -139,12 +149,20 @@ private fun ReadyBubble(onStart: () -> Unit, reduceMotion: Boolean) {
         animationSpec = infiniteRepeatable(tween(1_600), RepeatMode.Reverse),
         label = "ready-breath-scale",
     )
-    IconButton(
-        onClick = onStart,
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    Box(
         modifier = Modifier
             .size(width = 64.dp, height = 56.dp)
-            .then(if (reduceMotion) Modifier else Modifier),
-        colors = IconButtonDefaults.iconButtonColors(contentColor = PrimaryText),
+            .clip(RoundedCornerShape(22.dp))
+            .background(if (pressed) Clay.copy(alpha = 0.14f) else Color.Transparent)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                role = Role.Button,
+                onClick = onStart,
+            ),
+        contentAlignment = Alignment.Center,
     ) {
         WhispGlyph(
             modifier = Modifier.size(30.dp),
@@ -214,6 +232,8 @@ private fun ProcessingBubble(stage: ProcessingStage, onCancel: () -> Unit, reduc
 @Composable
 private fun ProcessingGlyph(stage: ProcessingStage, reduceMotion: Boolean) {
     val transition = rememberInfiniteTransition(label = "processing-dots")
+    val clay = Clay
+    val primaryText = PrimaryText
     val pulse by transition.animateFloat(
         initialValue = 0.42f,
         targetValue = 1f,
@@ -224,7 +244,7 @@ private fun ProcessingGlyph(stage: ProcessingStage, reduceMotion: Boolean) {
         val active = stage.ordinal
         listOf(0.25f, 0.5f, 0.75f).forEachIndexed { index, fraction ->
             drawCircle(
-                color = if (index == active) Clay else PrimaryText.copy(alpha = 0.36f),
+                color = if (index == active) clay else primaryText.copy(alpha = 0.36f),
                 radius = 3.1.dp.toPx() * if (index == active && !reduceMotion) pulse else 1f,
                 center = androidx.compose.ui.geometry.Offset(size.width * fraction, size.height / 2f),
             )
@@ -255,8 +275,8 @@ private fun FallbackBubble(text: String, onCopy: (String) -> Unit, onOpenApp: ()
         Text("Copy the text, then paste it in the focused field.", color = SecondaryText, style = MaterialTheme.typography.bodyMedium)
         Text(text, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            CompactButton("Copy", Icons.Outlined.ContentCopy, onClick = { onCopy(text) })
-            CompactButton("Open app", Icons.AutoMirrored.Outlined.Launch, onClick = onOpenApp)
+            CompactAction("Copy", Icons.Outlined.ContentCopy, onClick = { onCopy(text) })
+            CompactAction("Open app", Icons.AutoMirrored.Outlined.Launch, onClick = onOpenApp)
         }
     }
 }
@@ -273,8 +293,8 @@ private fun ErrorBubble(title: String, message: String, onRetry: () -> Unit, onO
         }
         Text(message, color = SecondaryText, style = MaterialTheme.typography.bodyMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            CompactButton("Retry", Icons.Outlined.Refresh, onRetry)
-            CompactButton("Open app", Icons.AutoMirrored.Outlined.Launch, onOpenApp)
+            CompactAction("Retry", Icons.Outlined.Refresh, onClick = onRetry)
+            CompactAction("Open app", Icons.AutoMirrored.Outlined.Launch, onClick = onOpenApp)
         }
     }
 }
@@ -306,24 +326,7 @@ private fun SnoozedBubble(onOpenApp: () -> Unit) {
 
 @Composable
 private fun BubbleIconButton(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, tint: Color, onClick: () -> Unit) {
-    IconButton(onClick = onClick, modifier = Modifier.size(48.dp)) {
-        Icon(icon, contentDescription = label, tint = tint)
-    }
-}
-
-@Composable
-private fun CompactButton(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
-        modifier = Modifier.heightIn(min = 48.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = Clay, contentColor = Ink),
-        shape = RoundedCornerShape(12.dp),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp),
-    ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(8.dp))
-        Text(label)
-    }
+    MinimumIconButton(icon, label, tint, onClick)
 }
 
 @Composable
@@ -333,6 +336,7 @@ private fun WhispGlyph(
     scale: Float,
     resolved: Boolean = false,
 ) {
+    val primaryText = PrimaryText
     Canvas(modifier) {
         val strokeWidth = size.minDimension * 0.09f
         val radius = size.minDimension * 0.28f
@@ -368,14 +372,14 @@ private fun WhispGlyph(
                 style = Stroke(strokeWidth, cap = StrokeCap.Round),
             )
             drawLine(
-                color = PrimaryText,
+                color = primaryText,
                 start = androidx.compose.ui.geometry.Offset(size.width * 0.5f, size.height * 0.5f),
                 end = androidx.compose.ui.geometry.Offset(size.width * 0.5f, size.height * 0.82f),
                 strokeWidth = strokeWidth,
                 cap = StrokeCap.Round,
             )
             drawLine(
-                color = PrimaryText,
+                color = primaryText,
                 start = androidx.compose.ui.geometry.Offset(size.width * 0.34f, size.height * 0.82f),
                 end = androidx.compose.ui.geometry.Offset(size.width * 0.66f, size.height * 0.82f),
                 strokeWidth = strokeWidth,

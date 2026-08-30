@@ -4,6 +4,7 @@ import com.flowerwhisp.mobile.domain.model.AppSettings
 import com.flowerwhisp.mobile.domain.model.Dictation
 import com.flowerwhisp.mobile.domain.model.DictionaryEntry
 import com.flowerwhisp.mobile.domain.model.Snippet
+import com.flowerwhisp.mobile.domain.model.TransformProfile
 import kotlinx.coroutines.flow.Flow
 
 interface HistoryRepository {
@@ -24,6 +25,12 @@ interface DictionaryRepository {
 interface SnippetRepository {
     fun observeAll(): Flow<List<Snippet>>
     suspend fun upsert(snippet: Snippet): Long
+    suspend fun delete(id: Long)
+}
+
+interface TransformRepository {
+    fun observeAll(): Flow<List<TransformProfile>>
+    suspend fun upsert(transform: TransformProfile): Long
     suspend fun delete(id: Long)
 }
 

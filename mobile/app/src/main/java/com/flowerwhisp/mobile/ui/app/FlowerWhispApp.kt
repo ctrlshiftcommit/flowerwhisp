@@ -1,27 +1,33 @@
 package com.flowerwhisp.mobile.ui.app
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -36,14 +42,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.LibraryBooks
 import androidx.compose.material.icons.automirrored.outlined.TextSnippet
+import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.AccessibilityNew
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Check
@@ -63,6 +72,7 @@ import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.RestartAlt
@@ -73,16 +83,15 @@ import androidx.compose.material.icons.outlined.Snooze
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.TouchApp
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material.icons.outlined.Widgets
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
@@ -103,23 +112,36 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.flowerwhisp.mobile.domain.model.BubbleOpacity
 import com.flowerwhisp.mobile.domain.model.BubbleSize
 import com.flowerwhisp.mobile.domain.model.BubbleState
+import com.flowerwhisp.mobile.domain.model.AppearanceMode
+import com.flowerwhisp.mobile.domain.model.CleanupLevel
+import com.flowerwhisp.mobile.domain.model.CleanupStatus
 import com.flowerwhisp.mobile.domain.model.Dictation
 import com.flowerwhisp.mobile.domain.model.DictationStatus
 import com.flowerwhisp.mobile.domain.model.DictionaryEntry
+import com.flowerwhisp.mobile.domain.model.DictionaryScope
 import com.flowerwhisp.mobile.domain.model.IdleBehavior
 import com.flowerwhisp.mobile.domain.model.LanguageMode
+import com.flowerwhisp.mobile.domain.model.RetentionMode
 import com.flowerwhisp.mobile.domain.model.Snippet
+import com.flowerwhisp.mobile.domain.model.StyleContext
+import com.flowerwhisp.mobile.domain.model.TransformProfile
 import com.flowerwhisp.mobile.domain.model.WritingStyle
+import com.flowerwhisp.mobile.domain.model.cleanupPrompt
+import com.flowerwhisp.mobile.domain.model.styleFor
+import com.flowerwhisp.mobile.domain.model.styleInstructionsFor
 import com.flowerwhisp.mobile.domain.insights.InsightSnapshot
 import com.flowerwhisp.mobile.domain.insights.calculateInsights
 import com.flowerwhisp.mobile.R
 import com.flowerwhisp.mobile.ui.bubble.FlowerWhispBubble
 import com.flowerwhisp.mobile.ui.components.ActionRow
+import com.flowerwhisp.mobile.ui.components.CompactAction
+import com.flowerwhisp.mobile.ui.components.CompactToggle
 import com.flowerwhisp.mobile.ui.components.FeatureSurface
 import com.flowerwhisp.mobile.ui.components.FlowerWhispTextField
 import com.flowerwhisp.mobile.ui.components.MinimumIconButton
@@ -130,6 +152,9 @@ import com.flowerwhisp.mobile.ui.components.SecondaryAction
 import com.flowerwhisp.mobile.ui.components.SectionTitle
 import com.flowerwhisp.mobile.ui.components.SelectRow
 import com.flowerwhisp.mobile.ui.components.SwitchRow
+import com.flowerwhisp.mobile.ui.components.ValueRow
+import com.flowerwhisp.mobile.ui.components.WhispDialog
+import com.flowerwhisp.mobile.ui.components.whispSurface
 import com.flowerwhisp.mobile.ui.theme.Error
 import com.flowerwhisp.mobile.ui.theme.Clay
 import com.flowerwhisp.mobile.ui.theme.FlowerWhispTheme
@@ -148,12 +173,17 @@ import java.util.Date
 
 @Composable
 fun FlowerWhispApp(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
-    FlowerWhispTheme {
-        Surface(modifier = Modifier.fillMaxSize(), color = Ink) {
-            if (!uiState.onboardingComplete) {
-                OnboardingScreen(uiState, actions)
-            } else {
-                AppShell(uiState, actions)
+    FlowerWhispTheme(appearanceMode = uiState.settings.appearanceMode) {
+        CompositionLocalProvider(LocalContentColor provides PrimaryText) {
+            Box(modifier = Modifier.fillMaxSize().background(Ink)) {
+                if (!uiState.onboardingComplete) {
+                    OnboardingScreen(uiState, actions)
+                } else {
+                    AppShell(uiState, actions)
+                }
+                uiState.transformPreview?.let { preview ->
+                    TransformPreviewDialog(preview, actions)
+                }
             }
         }
     }
@@ -163,17 +193,71 @@ fun FlowerWhispApp(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
 private fun AppShell(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = maxWidth >= 720.dp
+        val compactDrawerWidth = maxWidth * 0.84f
+        var drawerOpen by rememberSaveable { mutableStateOf(false) }
+        val navigate: (FlowerWhispDestination) -> Unit = { destination ->
+            drawerOpen = false
+            actions.onNavigate(destination)
+        }
+        BackHandler(enabled = drawerOpen) { drawerOpen = false }
         Box(Modifier.fillMaxSize().padding(WindowInsets.safeDrawing.asPaddingValues())) {
             if (wide) {
                 Row(Modifier.fillMaxSize()) {
-                    DestinationRail(uiState.destination, actions.onNavigate)
-                    HorizontalDivider(Modifier.fillMaxHeight().width(1.dp), color = Outline.copy(alpha = 0.72f))
-                    AnimatedDestinationContent(uiState, actions, Modifier.weight(1f))
+                    DestinationDrawer(
+                        selected = uiState.destination,
+                        onNavigate = navigate,
+                        modifier = Modifier.fillMaxHeight().width(224.dp),
+                        floating = false,
+                    )
+                    Box(Modifier.fillMaxHeight().width(1.dp).background(Outline.copy(alpha = 0.72f)))
+                    AnimatedDestinationContent(uiState, actions, null, Modifier.weight(1f))
                 }
             } else {
-                Column(Modifier.fillMaxSize()) {
-                    AnimatedDestinationContent(uiState, actions, Modifier.weight(1f))
-                    DestinationBar(uiState.destination, actions.onNavigate)
+                AnimatedDestinationContent(
+                    uiState = uiState,
+                    actions = actions,
+                    onOpenDrawer = { drawerOpen = true },
+                    modifier = Modifier.fillMaxSize(),
+                )
+                AnimatedVisibility(
+                    visible = drawerOpen,
+                    enter = if (uiState.settings.reduceMotion) EnterTransition.None else fadeIn(tween(140)),
+                    exit = if (uiState.settings.reduceMotion) ExitTransition.None else fadeOut(tween(100)),
+                ) {
+                    val scrimInteraction = remember { MutableInteractionSource() }
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.62f))
+                            .clickable(
+                                interactionSource = scrimInteraction,
+                                indication = null,
+                                role = Role.Button,
+                                onClick = { drawerOpen = false },
+                            )
+                            .semantics { contentDescription = "Close navigation" },
+                    )
+                }
+                AnimatedVisibility(
+                    visible = drawerOpen,
+                    modifier = Modifier.align(Alignment.CenterStart),
+                    enter = if (uiState.settings.reduceMotion) {
+                        EnterTransition.None
+                    } else {
+                        slideInHorizontally(tween(180)) { -it }
+                    },
+                    exit = if (uiState.settings.reduceMotion) {
+                        ExitTransition.None
+                    } else {
+                        slideOutHorizontally(tween(140)) { -it }
+                    },
+                ) {
+                    DestinationDrawer(
+                        selected = uiState.destination,
+                        onNavigate = navigate,
+                        modifier = Modifier.fillMaxHeight().width(compactDrawerWidth),
+                        floating = true,
+                    )
                 }
             }
         }
@@ -181,16 +265,25 @@ private fun AppShell(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
 }
 
 @Composable
-private fun AnimatedDestinationContent(uiState: FlowerWhispUiState, actions: FlowerWhispActions, modifier: Modifier) {
+private fun AnimatedDestinationContent(
+    uiState: FlowerWhispUiState,
+    actions: FlowerWhispActions,
+    onOpenDrawer: (() -> Unit)?,
+    modifier: Modifier,
+) {
     AnimatedContent(
         targetState = uiState.destination,
         transitionSpec = {
-            (fadeIn(tween(180)) togetherWith fadeOut(tween(120))).using(SizeTransform(clip = false))
+            if (uiState.settings.reduceMotion) {
+                EnterTransition.None togetherWith ExitTransition.None
+            } else {
+                (fadeIn(tween(180)) togetherWith fadeOut(tween(120))).using(SizeTransform(clip = false))
+            }
         },
         modifier = modifier,
         label = "destination-transition",
     ) { destination ->
-        DestinationContent(destination, uiState, actions, Modifier.fillMaxSize())
+        DestinationContent(destination, uiState, actions, onOpenDrawer, Modifier.fillMaxSize())
     }
 }
 
@@ -199,117 +292,168 @@ private fun DestinationContent(
     destination: FlowerWhispDestination,
     uiState: FlowerWhispUiState,
     actions: FlowerWhispActions,
+    onOpenDrawer: (() -> Unit)?,
     modifier: Modifier,
 ) {
     Box(modifier.fillMaxSize()) {
         when (destination) {
-            FlowerWhispDestination.HOME -> DictationScreen(uiState, actions)
-            FlowerWhispDestination.INSIGHTS -> InsightsScreen(uiState)
-            FlowerWhispDestination.HISTORY -> HistoryScreen(uiState, actions)
-            FlowerWhispDestination.LIBRARY -> LibraryScreen(uiState, actions)
-            FlowerWhispDestination.SETTINGS -> SettingsScreen(uiState, actions)
+            FlowerWhispDestination.HOME -> DictationScreen(uiState, actions, onOpenDrawer)
+            FlowerWhispDestination.HISTORY -> HistoryScreen(uiState, actions, onOpenDrawer)
+            FlowerWhispDestination.DICTIONARY -> LibraryScreen(uiState, actions, LibrarySection.DICTIONARY, onOpenDrawer)
+            FlowerWhispDestination.SNIPPETS -> LibraryScreen(uiState, actions, LibrarySection.SNIPPETS, onOpenDrawer)
+            FlowerWhispDestination.STYLE -> LibraryScreen(uiState, actions, LibrarySection.STYLE, onOpenDrawer)
+            FlowerWhispDestination.TRANSFORMS -> TransformsScreen(uiState, actions, onOpenDrawer)
+            FlowerWhispDestination.SCRATCHPAD -> ScratchpadScreen(uiState, actions, onOpenDrawer)
+            FlowerWhispDestination.INSIGHTS -> InsightsScreen(uiState, onOpenDrawer)
+            FlowerWhispDestination.SETTINGS -> SettingsScreen(uiState, actions, onOpenDrawer)
         }
     }
 }
 
 @Composable
-private fun DestinationBar(selected: FlowerWhispDestination, onNavigate: (FlowerWhispDestination) -> Unit) {
-    Surface(
-        color = SurfaceInk,
-        contentColor = PrimaryText,
-        border = BorderStroke(1.dp, Outline.copy(alpha = 0.72f)),
+private fun DestinationDrawer(
+    selected: FlowerWhispDestination,
+    onNavigate: (FlowerWhispDestination) -> Unit,
+    modifier: Modifier,
+    floating: Boolean,
+) {
+    val drawerInteraction = remember { MutableInteractionSource() }
+    Column(
+        modifier = modifier
+            .whispSurface(
+                color = SurfaceInk,
+                shape = if (floating) {
+                    RoundedCornerShape(0.dp)
+                } else {
+                    RoundedCornerShape(0.dp)
+                },
+                borderColor = if (floating) Outline else null,
+            )
+            .clickable(
+                interactionSource = drawerInteraction,
+                indication = null,
+                onClick = {},
+            )
+            .padding(horizontal = 16.dp, vertical = 18.dp),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-        FlowerWhispDestination.entries.forEach { destination ->
-            DestinationNavItem(destination, selected == destination, onNavigate)
-        }
-        }
-    }
-}
-
-@Composable
-private fun DestinationRail(selected: FlowerWhispDestination, onNavigate: (FlowerWhispDestination) -> Unit) {
-    Surface(
-        color = SurfaceInk,
-        contentColor = PrimaryText,
-        modifier = Modifier.fillMaxHeight().width(112.dp),
-    ) {
-        Column(Modifier.fillMaxHeight().padding(horizontal = 10.dp, vertical = 14.dp)) {
             Image(
                 painter = painterResource(R.drawable.flowerwhisp_logo),
-                contentDescription = "FlowerWhisp",
+                contentDescription = null,
                 contentScale = androidx.compose.ui.layout.ContentScale.Fit,
-                modifier = Modifier.size(48.dp).align(Alignment.CenterHorizontally),
+                modifier = Modifier.size(34.dp),
             )
-            Text(
-                "FLOWERWHISP",
-                style = MaterialTheme.typography.labelMedium,
-                color = SecondaryText,
-                modifier = Modifier.align(Alignment.CenterHorizontally).padding(top = 5.dp, bottom = 22.dp),
-            )
-        FlowerWhispDestination.entries.forEach { destination ->
-            DestinationRailItem(destination, selected == destination, onNavigate)
+            Text("FlowerWhisp", style = MaterialTheme.typography.titleMedium)
         }
-            Spacer(Modifier.weight(1f))
-            Text("PRIVATE BY DEFAULT", style = MaterialTheme.typography.labelMedium, color = MutedText, modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp))
+        Column(
+            modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(top = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            FlowerWhispDestination.entries.filterNot { it == FlowerWhispDestination.SETTINGS }.forEach { destination ->
+                DestinationDrawerItem(destination, selected == destination, onNavigate)
+            }
         }
-    }
-}
-
-@Composable
-private fun RowScope.DestinationNavItem(destination: FlowerWhispDestination, selected: Boolean, onNavigate: (FlowerWhispDestination) -> Unit) {
-    Column(
-        modifier = Modifier
-            .weight(1f)
-            .heightIn(min = 64.dp)
-            .clickable(role = Role.Button) { onNavigate(destination) }
-            .testTag("nav-${destination.name.lowercase()}"),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        Box(
-            modifier = Modifier
-                .width(24.dp)
-                .height(3.dp)
-                .background(if (selected) Clay else Color.Transparent, RoundedCornerShape(50)),
+        RowDivider()
+        DestinationDrawerItem(
+            FlowerWhispDestination.SETTINGS,
+            selected == FlowerWhispDestination.SETTINGS,
+            onNavigate,
         )
-        Icon(destination.icon(), contentDescription = null, tint = if (selected) Clay else SecondaryText, modifier = Modifier.size(21.dp))
-        Text(destination.label, style = MaterialTheme.typography.labelMedium, color = if (selected) PrimaryText else SecondaryText, maxLines = 1)
     }
 }
 
 @Composable
-private fun DestinationRailItem(destination: FlowerWhispDestination, selected: Boolean, onNavigate: (FlowerWhispDestination) -> Unit) {
+private fun DestinationDrawerItem(
+    destination: FlowerWhispDestination,
+    selected: Boolean,
+    onNavigate: (FlowerWhispDestination) -> Unit,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 58.dp)
-            .clickable(role = Role.Button) { onNavigate(destination) }
-            .background(if (selected) SurfaceSelected else Color.Transparent, RoundedCornerShape(14.dp))
-            .padding(horizontal = 10.dp, vertical = 9.dp)
+            .heightIn(min = 52.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (pressed) SurfaceSelected else Color.Transparent)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClick = { onNavigate(destination) },
+            )
+            .padding(horizontal = 10.dp, vertical = 8.dp)
             .testTag("nav-${destination.name.lowercase()}"),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(11.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Icon(destination.icon(), contentDescription = null, tint = if (selected) Clay else SecondaryText, modifier = Modifier.size(21.dp))
-        Text(destination.label, style = MaterialTheme.typography.labelLarge, color = if (selected) PrimaryText else SecondaryText)
+        Box(Modifier.width(3.dp).height(22.dp).background(if (selected) Clay else Color.Transparent, RoundedCornerShape(50)))
+        Icon(destination.icon(), contentDescription = null, tint = if (selected) PrimaryText else SecondaryText, modifier = Modifier.size(20.dp))
+        Text(destination.label, style = MaterialTheme.typography.bodyLarge, color = if (selected) PrimaryText else SecondaryText)
+    }
+}
+
+@Composable
+private fun DrawerTrigger(onClick: () -> Unit) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val lineColor = if (pressed) Clay else PrimaryText
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (pressed) SurfaceSelected else Color.Transparent)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .semantics { contentDescription = "Open navigation" }
+            .testTag("open-navigation"),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.size(22.dp)) {
+            val stroke = 1.6.dp.toPx()
+            val left = 2.dp.toPx()
+            val right = size.width - 2.dp.toPx()
+            listOf(5.dp.toPx(), 11.dp.toPx(), 17.dp.toPx()).forEach { y ->
+                drawLine(lineColor, androidx.compose.ui.geometry.Offset(left, y), androidx.compose.ui.geometry.Offset(right, y), stroke, StrokeCap.Round)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DestinationHeader(title: String, onOpenDrawer: (() -> Unit)?) {
+    if (onOpenDrawer == null) {
+        ScreenHeader(title)
+    } else {
+        ScreenHeader(title = title, leading = { DrawerTrigger(onOpenDrawer) })
     }
 }
 
 private fun FlowerWhispDestination.icon(): ImageVector = when (this) {
     FlowerWhispDestination.HOME -> Icons.Outlined.GraphicEq
-    FlowerWhispDestination.INSIGHTS -> Icons.Outlined.Insights
     FlowerWhispDestination.HISTORY -> Icons.Outlined.History
-    FlowerWhispDestination.LIBRARY -> Icons.AutoMirrored.Outlined.LibraryBooks
+    FlowerWhispDestination.DICTIONARY -> Icons.AutoMirrored.Outlined.LibraryBooks
+    FlowerWhispDestination.SNIPPETS -> Icons.AutoMirrored.Outlined.TextSnippet
+    FlowerWhispDestination.STYLE -> Icons.Outlined.FormatPaint
+    FlowerWhispDestination.TRANSFORMS -> Icons.Outlined.Refresh
+    FlowerWhispDestination.SCRATCHPAD -> Icons.Outlined.Edit
+    FlowerWhispDestination.INSIGHTS -> Icons.Outlined.Insights
     FlowerWhispDestination.SETTINGS -> Icons.Outlined.Settings
 }
 
 @Composable
 private fun OnboardingScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
     val step = uiState.onboardingStep
+    // API keys must never enter saved-instance state or process-restoration bundles.
+    var providerKey by remember { mutableStateOf("") }
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
@@ -333,74 +477,115 @@ private fun OnboardingScreen(uiState: FlowerWhispUiState, actions: FlowerWhispAc
                     contentScale = androidx.compose.ui.layout.ContentScale.Fit,
                     modifier = Modifier.size(42.dp),
                 )
-                Text("FLOWERWHISP", style = MaterialTheme.typography.labelLarge, color = SecondaryText, modifier = Modifier.padding(start = 9.dp).weight(1f))
-                Text(
-                    "Skip setup",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = SecondaryText,
-                    modifier = Modifier
-                        .clickable(role = Role.Button, onClick = actions.onSkipOnboarding)
-                        .padding(horizontal = 8.dp, vertical = 12.dp),
-                )
+                Text("FlowerWhisp", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 9.dp).weight(1f))
             }
             OnboardingProgress(step)
             AnimatedContent(
                 targetState = step,
                 transitionSpec = {
-                    (fadeIn(tween(220)) togetherWith fadeOut(tween(140))).using(SizeTransform(clip = false))
+                    if (uiState.settings.reduceMotion) {
+                        EnterTransition.None togetherWith ExitTransition.None
+                    } else {
+                        (fadeIn(tween(220)) togetherWith fadeOut(tween(140))).using(SizeTransform(clip = false))
+                    }
                 },
                 label = "onboarding-step",
             ) { current ->
                 Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    OnboardingGlyph(current)
                     val currentDetails = onboardingDetails(current)
-                    Text(currentDetails.kicker.uppercase(), style = MaterialTheme.typography.labelMedium, color = Clay)
                     Text(currentDetails.title, style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
-                    Text(currentDetails.body, style = MaterialTheme.typography.bodyLarge, color = SecondaryText)
+                    currentDetails.body?.let { body ->
+                        Text(body, style = MaterialTheme.typography.bodyLarge, color = SecondaryText)
+                    }
                     when (current) {
                         OnboardingStep.ACCESS -> AccessChecklist(uiState, actions)
                         OnboardingStep.MICROPHONE -> MicrophonePermissionCard(uiState, actions)
-                        OnboardingStep.TEST -> TestPreview(actions)
+                        OnboardingStep.PROVIDER -> ProviderSetup(
+                            apiKey = providerKey,
+                            onApiKeyChange = { providerKey = it },
+                            configured = uiState.groqApiKeyConfigured,
+                        )
+                        OnboardingStep.TEST -> TestPreview(uiState, actions)
                         OnboardingStep.READY -> ReadyChecklist(uiState)
-                        OnboardingStep.WELCOME -> WelcomeExample()
+                        OnboardingStep.WELCOME -> Unit
+                    }
+                    uiState.serviceMessage?.takeIf(String::isNotBlank)?.let { message ->
+                        Text(message, style = MaterialTheme.typography.bodyMedium, color = if (message.contains("saved", ignoreCase = true)) Clay else SecondaryText)
                     }
                 }
             }
-            OnboardingAction(step, uiState, actions)
+            OnboardingAction(
+                step = step,
+                uiState = uiState,
+                providerKey = providerKey,
+                actions = actions,
+                onProviderKeyConsumed = { providerKey = "" },
+            )
         }
     }
 }
 
-private data class OnboardingDetails(val kicker: String, val title: String, val body: String)
+private data class OnboardingDetails(val title: String, val body: String? = null)
 
 private fun onboardingDetails(step: OnboardingStep): OnboardingDetails = when (step) {
-    OnboardingStep.WELCOME -> OnboardingDetails("A quieter way to write", "Write what you mean", "Speak naturally. FlowerWhisp turns your voice into clean text wherever you type, without replacing your keyboard.")
-    OnboardingStep.ACCESS -> OnboardingDetails("One-time access", "Keep the bubble close", "Choose where FlowerWhisp can appear and how it can insert text. You can change these permissions any time in Settings.")
-    OnboardingStep.MICROPHONE -> OnboardingDetails("Your voice, on request", "Give your words a voice", "Microphone access is used only while you are recording a dictation. Nothing starts until you tap the bubble.")
-    OnboardingStep.TEST -> OnboardingDetails("Make it real", "Try one short dictation", "Focus a normal text field, tap FlowerWhisp, and say a sentence. The first successful insertion is the whole point of setup.")
-    OnboardingStep.READY -> OnboardingDetails("Setup check", "Ready when you are", "The essentials are in place. Start from the Dictate tab or use the bubble in any supported text field.")
+    OnboardingStep.WELCOME -> OnboardingDetails("Dictate anywhere")
+    OnboardingStep.ACCESS -> OnboardingDetails("Access")
+    OnboardingStep.MICROPHONE -> OnboardingDetails("Microphone")
+    OnboardingStep.PROVIDER -> OnboardingDetails("Connect Groq", "Transcription and cleanup")
+    OnboardingStep.TEST -> OnboardingDetails("Test dictation")
+    OnboardingStep.READY -> OnboardingDetails("Ready")
 }
 
 @Composable
-private fun OnboardingAction(step: OnboardingStep, uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
+private fun OnboardingAction(
+    step: OnboardingStep,
+    uiState: FlowerWhispUiState,
+    providerKey: String,
+    actions: FlowerWhispActions,
+    onProviderKeyConsumed: () -> Unit,
+) {
     when (step) {
-        OnboardingStep.WELCOME -> PrimaryAction("Set up in about a minute", Icons.AutoMirrored.Outlined.ArrowForward, onClick = { actions.onAdvanceOnboarding(OnboardingStep.ACCESS) })
+        OnboardingStep.WELCOME -> PrimaryAction("Continue", Icons.AutoMirrored.Outlined.ArrowForward, onClick = { actions.onAdvanceOnboarding(OnboardingStep.ACCESS) })
         OnboardingStep.ACCESS -> when {
-            !uiState.capabilities.overlayEnabled -> PrimaryAction("Allow bubble overlay", Icons.Outlined.Layers, onClick = actions.onRequestOverlay)
-            !uiState.capabilities.accessibilityEnabled -> PrimaryAction("Enable text insertion", Icons.Outlined.AccessibilityNew, onClick = actions.onRequestAccessibility)
-            else -> PrimaryAction("Continue to microphone", Icons.AutoMirrored.Outlined.ArrowForward, onClick = { actions.onAdvanceOnboarding(OnboardingStep.MICROPHONE) })
+            !uiState.capabilities.overlayEnabled -> PrimaryAction("Allow overlay", Icons.Outlined.Layers, onClick = actions.onRequestOverlay)
+            !uiState.capabilities.textInsertionReady -> PrimaryAction("Enable insertion", Icons.Outlined.AccessibilityNew, onClick = actions.onRequestAccessibility)
+            else -> PrimaryAction("Continue", Icons.AutoMirrored.Outlined.ArrowForward, onClick = { actions.onAdvanceOnboarding(OnboardingStep.MICROPHONE) })
         }
         OnboardingStep.MICROPHONE -> if (uiState.capabilities.microphoneGranted) {
-            PrimaryAction("Continue to the test", Icons.AutoMirrored.Outlined.ArrowForward, onClick = { actions.onAdvanceOnboarding(OnboardingStep.TEST) })
+            PrimaryAction("Continue", Icons.AutoMirrored.Outlined.ArrowForward, onClick = { actions.onAdvanceOnboarding(OnboardingStep.PROVIDER) })
         } else PrimaryAction("Allow microphone", Icons.Outlined.Mic, onClick = actions.onRequestMicrophone)
+        OnboardingStep.PROVIDER -> if (uiState.groqApiKeyConfigured) {
+            PrimaryAction("Continue", Icons.AutoMirrored.Outlined.ArrowForward, onClick = { actions.onAdvanceOnboarding(OnboardingStep.TEST) })
+        } else {
+            PrimaryAction(
+                "Save key",
+                Icons.Outlined.Lock,
+                enabled = providerKey.trim().length >= 10,
+                onClick = {
+                    actions.onSaveApiKey(providerKey.trim())
+                    onProviderKeyConsumed()
+                },
+            )
+        }
         OnboardingStep.TEST -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            PrimaryAction("Start a short test", Icons.Outlined.Mic, onClick = actions.onOnboardingRealTest)
-            SecondaryAction("Continue to final check", Icons.AutoMirrored.Outlined.ArrowForward, onClick = { actions.onAdvanceOnboarding(OnboardingStep.READY) })
+            if (uiState.bubbleState is BubbleState.Recording) {
+                PrimaryAction("Finish test", Icons.Outlined.Stop, onClick = actions.onFinish)
+            } else {
+                PrimaryAction("Start test", Icons.Outlined.Mic, onClick = actions.onOnboardingRealTest)
+            }
+            SecondaryAction("Continue", Icons.AutoMirrored.Outlined.ArrowForward, onClick = { actions.onAdvanceOnboarding(OnboardingStep.READY) })
         }
         OnboardingStep.READY -> {
             val repair = firstRepair(uiState)
-            if (repair == null) PrimaryAction("Start dictating", Icons.Outlined.Check, onClick = actions.onCompleteOnboarding)
-            else PrimaryAction(repair.label, repair.icon, onClick = repair.action(actions))
+            when {
+                !uiState.groqApiKeyConfigured && !uiState.settings.useMockEngines -> {
+                    PrimaryAction("Connect Groq", Icons.Outlined.Lock) {
+                        actions.onAdvanceOnboarding(OnboardingStep.PROVIDER)
+                    }
+                }
+                repair == null -> PrimaryAction("Finish setup", Icons.Outlined.Check, onClick = actions.onCompleteOnboarding)
+                else -> PrimaryAction(repair.label, repair.icon, onClick = repair.action(actions))
+            }
         }
     }
 }
@@ -429,15 +614,17 @@ private fun OnboardingGlyph(step: OnboardingStep) {
         OnboardingStep.WELCOME -> Icons.Outlined.GraphicEq
         OnboardingStep.ACCESS -> Icons.Outlined.Layers
         OnboardingStep.MICROPHONE -> Icons.Outlined.Mic
+        OnboardingStep.PROVIDER -> Icons.Outlined.Lock
         OnboardingStep.TEST -> Icons.Outlined.TouchApp
         OnboardingStep.READY -> Icons.Outlined.CheckCircle
     }
-    Surface(
-        color = Clay.copy(alpha = 0.12f),
-        shape = RoundedCornerShape(18.dp),
-        modifier = Modifier.size(56.dp),
+    Box(
+        modifier = Modifier
+            .size(56.dp)
+            .whispSurface(color = Clay.copy(alpha = 0.12f), shape = RoundedCornerShape(18.dp), borderColor = null),
+        contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, contentDescription = null, tint = Clay, modifier = Modifier.padding(15.dp))
+        Icon(icon, contentDescription = null, tint = Clay, modifier = Modifier.size(26.dp))
     }
 }
 
@@ -464,15 +651,13 @@ private fun WelcomeExample() {
 private fun AccessChecklist(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         PermissionRow(
-            title = "Bubble overlay",
-            description = "Keep the dictation control above the app you are writing in.",
+            title = "Overlay",
             ready = uiState.capabilities.overlayEnabled,
             action = actions.onRequestOverlay,
         )
         PermissionRow(
             title = "Text insertion",
-            description = "Place the finished text at the cursor in the focused field.",
-            ready = uiState.capabilities.accessibilityEnabled,
+            ready = uiState.capabilities.textInsertionReady,
             action = actions.onRequestAccessibility,
         )
     }
@@ -482,14 +667,13 @@ private fun AccessChecklist(uiState: FlowerWhispUiState, actions: FlowerWhispAct
 private fun MicrophonePermissionCard(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
     PermissionRow(
         title = "Microphone",
-        description = "Used only while FlowerWhisp is actively recording.",
         ready = uiState.capabilities.microphoneGranted,
         action = actions.onRequestMicrophone,
     )
 }
 
 @Composable
-private fun PermissionRow(title: String, description: String, ready: Boolean, action: () -> Unit) {
+private fun PermissionRow(title: String, description: String? = null, ready: Boolean, action: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -502,38 +686,77 @@ private fun PermissionRow(title: String, description: String, ready: Boolean, ac
         Box(Modifier.size(11.dp).background(if (ready) Clay else Warning, RoundedCornerShape(50)))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
-            Text(description, style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
+            description?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = SecondaryText) }
         }
-        Text(if (ready) "Ready" else "Set up", style = MaterialTheme.typography.labelMedium, color = if (ready) Clay else Warning)
+        Text(if (ready) "On" else "Set up", style = MaterialTheme.typography.labelMedium, color = if (ready) Clay else Warning)
     }
 }
 
 @Composable
-private fun TestPreview(actions: FlowerWhispActions) {
-    Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-        Text("Try the instrument", style = MaterialTheme.typography.labelMedium, color = SecondaryText)
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-            FlowerWhispBubble(
-                state = BubbleState.Ready,
-                elapsedSeconds = 0,
-                onStart = actions.onOnboardingRealTest,
-                onFinish = {},
-                onCancel = {},
-                onRetry = {},
-                onCopy = {},
-                onOpenApp = {},
+private fun ProviderSetup(
+    apiKey: String,
+    onApiKeyChange: (String) -> Unit,
+    configured: Boolean,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Groq Cloud", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            Text(if (configured) "Saved" else "No key", style = MaterialTheme.typography.labelMedium, color = if (configured) Clay else SecondaryText)
+        }
+        if (!configured) {
+            FlowerWhispTextField(
+                value = apiKey,
+                onValueChange = onApiKeyChange,
+                label = "Groq API key",
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                singleLine = true,
+                supportingText = "Stored with Android Keystore",
             )
         }
-        Text("Focus a text field first. The test uses the same bubble you will use every day.", color = SecondaryText, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@Composable
+private fun TestPreview(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
+    var testText by rememberSaveable { mutableStateOf("") }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        FlowerWhispTextField(
+            value = testText,
+            onValueChange = { testText = it },
+            label = "Tap here first",
+            minLines = 3,
+            supportingText = "Start, speak, then finish",
+        )
+        if (uiState.bubbleState !is BubbleState.Ready && uiState.bubbleState !is BubbleState.Hidden) {
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                FlowerWhispBubble(
+                    state = uiState.bubbleState,
+                    elapsedSeconds = uiState.elapsedSeconds,
+                    onStart = actions.onOnboardingRealTest,
+                    onFinish = actions.onFinish,
+                    onCancel = actions.onCancel,
+                    onRetry = actions.onRetry,
+                    onCopy = actions.onCopy,
+                    onOpenApp = actions.onOpenApp,
+                    reduceMotion = uiState.settings.reduceMotion,
+                    hapticsEnabled = uiState.settings.haptics,
+                )
+            }
+        }
     }
 }
 
 @Composable
 private fun ReadyChecklist(uiState: FlowerWhispUiState) {
-    FeatureSurface(selected = firstRepair(uiState) == null) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         CapabilityLine("Bubble overlay", uiState.capabilities.overlayEnabled)
-        CapabilityLine("Text insertion", uiState.capabilities.accessibilityEnabled)
+        CapabilityLine("Text insertion", uiState.capabilities.textInsertionReady)
         CapabilityLine("Microphone", uiState.capabilities.microphoneGranted)
+        CapabilityLine("Groq", uiState.groqApiKeyConfigured)
         CapabilityLine("Notifications", uiState.capabilities.notificationsGranted, optional = true)
     }
 }
@@ -562,156 +785,128 @@ private data class Repair(val label: String, val icon: ImageVector, val kind: In
 
 private fun firstRepair(uiState: FlowerWhispUiState): Repair? = when {
     !uiState.capabilities.overlayEnabled -> Repair("Allow bubble overlay", Icons.Outlined.Layers, 0)
-    !uiState.capabilities.accessibilityEnabled -> Repair("Enable text insertion", Icons.Outlined.AccessibilityNew, 1)
+    !uiState.capabilities.textInsertionReady -> Repair("Enable text insertion", Icons.Outlined.AccessibilityNew, 1)
     !uiState.capabilities.microphoneGranted -> Repair("Allow microphone", Icons.Outlined.Mic, 2)
     else -> null
 }
 
 @Composable
-private fun DictationScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
+private fun DictationScreen(
+    uiState: FlowerWhispUiState,
+    actions: FlowerWhispActions,
+    onOpenDrawer: (() -> Unit)?,
+) {
     ScreenColumn("dictation-screen") {
-        ScreenHeader("Dictate", "Speak naturally. Keep your hands on the field.")
+        DestinationHeader("Dictation", onOpenDrawer)
         val recoverable = uiState.history.firstOrNull {
             it.recoveryAudioPath != null && it.status != DictationStatus.COMPLETE
         }
         if (recoverable != null) {
-            FeatureSurface {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(Icons.Outlined.Refresh, contentDescription = null, tint = Warning, modifier = Modifier.size(30.dp))
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("Recording recovered", style = MaterialTheme.typography.titleLarge)
-                        Text("Your audio is safe. Retry the transcript without recording again.", color = SecondaryText)
-                    }
-                }
-                PrimaryAction("Retry transcript", Icons.Outlined.Refresh) { actions.onRetryHistory(recoverable.id) }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                StatusDot(false)
+                Text("Recording saved", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                Text(
+                    "Retry",
+                    color = Clay,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.clickable(role = Role.Button) { actions.onRetryHistory(recoverable.id) }.padding(12.dp),
+                )
             }
         }
 
         val repair = firstRepair(uiState)
-        FeatureSurface(selected = repair == null) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                StatusDot(ready = repair == null)
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text(if (repair == null) "Ready to dictate" else "Finish setup first", style = MaterialTheme.typography.titleLarge)
-                    Text(if (repair == null) "The bubble is ready wherever you can type." else repair.label, color = SecondaryText)
-                }
-                Text(if (repair == null) "LIVE" else "SETUP", style = MaterialTheme.typography.labelMedium, color = if (repair == null) Clay else Warning)
+        val providerReady = uiState.settings.useMockEngines || uiState.groqApiKeyConfigured
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                StatusDot(ready = repair == null && providerReady)
+                Text(
+                    when {
+                        !providerReady -> "Groq key required"
+                        repair != null -> repair.label
+                        else -> "Ready"
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                )
             }
-            DictationInstrument(uiState, actions)
-            if (repair != null) {
+            if (uiState.bubbleState.isActiveDictationState()) {
+                DictationInstrument(uiState, actions)
+            } else if (providerReady && repair == null) {
+                Text("Focus a text field. Use the bubble.", style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
+            }
+            if (!providerReady) {
+                SecondaryAction("Open provider settings", Icons.Outlined.Lock) {
+                    actions.onNavigate(FlowerWhispDestination.SETTINGS)
+                }
+            } else if (repair != null) {
                 PrimaryAction(repair.label, repair.icon, onClick = repair.action(actions))
-            } else {
-                Text("Tap the instrument to start. Hold it for push-to-talk.", color = SecondaryText, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.align(Alignment.CenterHorizontally))
             }
         }
 
-        FeatureSurface {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Icon(Icons.Outlined.Tune, contentDescription = null, tint = Clay, modifier = Modifier.size(22.dp))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("Current voice setup", style = MaterialTheme.typography.titleMedium)
-                    Text("${uiState.settings.language.displayName} · ${uiState.settings.writingStyle.displayName}", color = SecondaryText, style = MaterialTheme.typography.bodyMedium)
-                }
-                Text("Adjust in Settings", style = MaterialTheme.typography.labelMedium, color = Clay)
-            }
-        }
-
-        SectionTitle("Access", "These checks keep the instrument reliable across apps.")
-        CapabilityActionRow("Bubble overlay", uiState.capabilities.overlayEnabled, Icons.Outlined.Layers, actions.onRequestOverlay)
-        RowDivider()
-        CapabilityActionRow("Text insertion", uiState.capabilities.accessibilityEnabled, Icons.Outlined.AccessibilityNew, actions.onRequestAccessibility)
-        RowDivider()
-        CapabilityActionRow("Microphone", uiState.capabilities.microphoneGranted, Icons.Outlined.Mic, actions.onRequestMicrophone)
-        RowDivider()
-        CapabilityActionRow("Notifications", uiState.capabilities.notificationsGranted, Icons.Outlined.Notifications, actions.onRequestNotifications)
-
-        RecentDictations(uiState.history, actions)
-
-        uiState.serviceMessage?.let { message ->
-            SectionTitle("Needs attention")
-            FeatureSurface {
-                Text(message, color = Error)
-                PrimaryAction("Restart service", Icons.Outlined.RestartAlt, onClick = actions.onRestartService)
-            }
+        uiState.serviceMessage?.takeIf(String::isNotBlank)?.let { message ->
+            Text(message, color = if (uiState.bubbleState is BubbleState.ServiceError || uiState.bubbleState is BubbleState.AccessibilityError) Error else SecondaryText, style = MaterialTheme.typography.bodyMedium)
         }
         if (uiState.settings.snoozedUntilEpochMs > System.currentTimeMillis() || uiState.bubbleState is BubbleState.Snoozed) {
             PrimaryAction("Wake bubble", Icons.Outlined.CheckCircle, onClick = actions.onWake)
-        } else {
-            SecondaryAction("Snooze bubble", Icons.Outlined.Snooze, onClick = actions.onSnooze)
         }
+        if (uiState.history.isNotEmpty()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SecondaryAction("Copy last", Icons.Outlined.ContentCopy, actions.onCopyLastTranscript)
+                SecondaryAction("All history", Icons.Outlined.History) {
+                    actions.onNavigate(FlowerWhispDestination.HISTORY)
+                }
+            }
+        }
+        RecentDictations(uiState.history, actions)
     }
+}
+
+private fun BubbleState.isActiveDictationState(): Boolean = when (this) {
+    BubbleState.Hidden, BubbleState.Ready, is BubbleState.Snoozed -> false
+    else -> true
 }
 
 @Composable
 private fun DictationInstrument(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
-    val state = if (uiState.bubbleState is BubbleState.Hidden) BubbleState.Ready else uiState.bubbleState
-    val transition = rememberInfiniteTransition(label = "dictation-instrument")
-    val rotation by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(tween(9_000, easing = androidx.compose.animation.core.LinearEasing), RepeatMode.Restart),
-        label = "instrument-rotation",
-    )
-    val pulse by transition.animateFloat(
-        initialValue = 0.94f,
-        targetValue = 1.06f,
-        animationSpec = infiniteRepeatable(tween(1_800), RepeatMode.Reverse),
-        label = "instrument-pulse",
-    )
-    val animate = !uiState.settings.reduceMotion
+    val state = uiState.bubbleState
+    val waveformColor = when (state) {
+        is BubbleState.Recording -> Clay
+        is BubbleState.Success -> Resolved
+        is BubbleState.AccessibilityError, is BubbleState.ServiceError -> Error
+        else -> SecondaryText
+    }
+    val liveLevel = (state as? BubbleState.Recording)?.level?.coerceIn(0f, 1f) ?: 0.14f
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(214.dp)
-            .padding(top = 8.dp, bottom = 8.dp),
+            .height(142.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Canvas(Modifier.size(198.dp)) {
-            val center = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
-            val radius = size.minDimension * 0.43f
-            val ringColor = when (state) {
-                is BubbleState.Recording -> Clay
-                is BubbleState.Success -> Resolved
-                is BubbleState.AccessibilityError, is BubbleState.ServiceError -> Error
-                else -> Outline
-            }
-            drawCircle(ringColor.copy(alpha = 0.28f), radius = radius, style = Stroke(1.5.dp.toPx()))
-            drawArc(
-                color = ringColor.copy(alpha = 0.88f),
-                startAngle = if (animate) rotation else -35f,
-                sweepAngle = if (state is BubbleState.Recording) 112f else 68f,
-                useCenter = false,
-                topLeft = androidx.compose.ui.geometry.Offset(center.x - radius, center.y - radius),
-                size = androidx.compose.ui.geometry.Size(radius * 2f, radius * 2f),
-                style = Stroke(2.5.dp.toPx(), cap = StrokeCap.Round),
-            )
-            val petalLength = radius * 0.2f * if (animate) pulse else 1f
-            repeat(8) { index ->
-                val angle = Math.toRadians(index * 45.0)
-                val start = androidx.compose.ui.geometry.Offset(
-                    center.x + kotlin.math.cos(angle).toFloat() * (radius * 0.82f),
-                    center.y + kotlin.math.sin(angle).toFloat() * (radius * 0.82f),
+        Canvas(Modifier.fillMaxWidth().height(54.dp).padding(horizontal = 38.dp)) {
+            val centerY = size.height / 2f
+            val gap = size.width / 24f
+            repeat(25) { index ->
+                val distance = kotlin.math.abs(index - 12) / 12f
+                val pattern = 0.35f + ((index * 7) % 9) / 12f
+                val height = size.height * (0.12f + (1f - distance * 0.55f) * pattern * (0.18f + liveLevel * 0.62f))
+                val x = index * gap
+                drawLine(
+                    color = waveformColor.copy(alpha = if (index in 10..14) 0.9f else 0.42f),
+                    start = androidx.compose.ui.geometry.Offset(x, centerY - height / 2f),
+                    end = androidx.compose.ui.geometry.Offset(x, centerY + height / 2f),
+                    strokeWidth = 1.5.dp.toPx(),
+                    cap = StrokeCap.Round,
                 )
-                val end = androidx.compose.ui.geometry.Offset(
-                    center.x + kotlin.math.cos(angle).toFloat() * (radius * 0.82f + petalLength),
-                    center.y + kotlin.math.sin(angle).toFloat() * (radius * 0.82f + petalLength),
-                )
-                drawLine(ringColor.copy(alpha = if (index % 2 == 0) 0.56f else 0.26f), start, end, 1.5.dp.toPx(), StrokeCap.Round)
             }
         }
-        Surface(
-            color = SurfaceElevated,
-            shape = CircleShape,
-            border = BorderStroke(1.dp, Outline),
-            modifier = Modifier.size(112.dp),
-        ) {
-            Image(
-                painter = painterResource(R.drawable.flowerwhisp_logo),
-                contentDescription = "FlowerWhisp logo",
-                modifier = Modifier.padding(14.dp),
-            )
-        }
-        Box(Modifier.align(Alignment.BottomCenter)) {
+        Box(Modifier.align(Alignment.Center)) {
             FlowerWhispBubble(
                 state = state,
                 elapsedSeconds = uiState.elapsedSeconds,
@@ -722,6 +917,7 @@ private fun DictationInstrument(uiState: FlowerWhispUiState, actions: FlowerWhis
                 onCopy = actions.onCopy,
                 onOpenApp = actions.onOpenApp,
                 reduceMotion = uiState.settings.reduceMotion,
+                hapticsEnabled = uiState.settings.haptics,
             )
         }
     }
@@ -730,9 +926,9 @@ private fun DictationInstrument(uiState: FlowerWhispUiState, actions: FlowerWhis
 @Composable
 private fun RecentDictations(history: List<Dictation>, actions: FlowerWhispActions) {
     val recent = history.take(3)
-    SectionTitle("Recent dictations")
+    SectionTitle("Recent")
     if (recent.isEmpty()) {
-        Text("Your finished dictations will appear here.", style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
+        Text("No dictations yet", style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
     } else {
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             recent.forEachIndexed { index, item ->
@@ -765,52 +961,48 @@ private fun StatusDot(ready: Boolean) {
 }
 
 @Composable
-private fun InsightsScreen(uiState: FlowerWhispUiState) {
+private fun InsightsScreen(uiState: FlowerWhispUiState, onOpenDrawer: (() -> Unit)?) {
     val snapshot = remember(uiState.history) { calculateInsights(uiState.history) }
     ScreenColumn("insights-screen") {
-        ScreenHeader("Insights", "A small, honest view of your dictation habit")
+        DestinationHeader("Insights", onOpenDrawer)
         if (!snapshot.hasData) {
-            StatusPanel(Icons.Outlined.GraphicEq, "Your first insight is waiting", "Complete a dictation and FlowerWhisp will show your sessions, words, and speaking time here.", Clay)
+            StatusPanel(Icons.Outlined.GraphicEq, "No data", tint = Clay)
         } else {
             InsightMetricGrid(snapshot)
-            SectionTitle("Last seven days", "Completed dictations only")
+            SectionTitle("Last seven days")
             ActivityBars(snapshot)
-            FeatureSurface {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(Icons.Outlined.Language, contentDescription = null, tint = Clay, modifier = Modifier.size(24.dp))
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("Most used language", style = MaterialTheme.typography.titleMedium)
-                        Text(snapshot.mostUsedLanguage?.displayName ?: "Not enough data yet", style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
-                    }
-                }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Language", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                Text(snapshot.mostUsedLanguage?.displayName ?: "—", style = MaterialTheme.typography.bodyLarge, color = SecondaryText)
             }
-            Text("These numbers stay on this device and reflect completed records in History.", style = MaterialTheme.typography.bodyMedium, color = MutedText)
         }
     }
 }
 
 @Composable
 private fun InsightMetricGrid(snapshot: InsightSnapshot) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            InsightMetric("Sessions", snapshot.totalSessions.toString(), "completed", Modifier.weight(1f))
-            InsightMetric("Words", snapshot.totalWords.toString(), "refined", Modifier.weight(1f))
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            InsightMetric("Speaking time", formatSpeakingTime(snapshot.speakingTimeMs), "recorded", Modifier.weight(1f))
-            InsightMetric("Average", snapshot.averageWordsPerSession.toString(), "words / session", Modifier.weight(1f))
-        }
+    Column {
+        InsightMetric("Sessions", snapshot.totalSessions.toString())
+        RowDivider()
+        InsightMetric("Words", snapshot.totalWords.toString())
+        RowDivider()
+        InsightMetric("Speaking time", formatSpeakingTime(snapshot.speakingTimeMs))
+        RowDivider()
+        InsightMetric("Average words", snapshot.averageWordsPerSession.toString())
     }
 }
 
 @Composable
-private fun InsightMetric(label: String, value: String, detail: String, modifier: Modifier) {
-    Surface(modifier = modifier, color = SurfaceInk, shape = RoundedCornerShape(18.dp), border = BorderStroke(1.dp, Outline)) {
-        Column(Modifier.padding(horizontal = 15.dp, vertical = 15.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text(label, style = MaterialTheme.typography.labelMedium, color = SecondaryText)
-            Text(value, style = MaterialTheme.typography.headlineMedium, color = PrimaryText)
-            Text(detail, style = MaterialTheme.typography.bodyMedium, color = MutedText)
-        }
+private fun InsightMetric(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        Text(value, style = MaterialTheme.typography.titleLarge, color = PrimaryText)
     }
 }
 
@@ -845,14 +1037,30 @@ private fun CapabilityActionRow(label: String, ready: Boolean, icon: ImageVector
 }
 
 @Composable
-private fun HistoryScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
+private fun HistoryScreen(
+    uiState: FlowerWhispUiState,
+    actions: FlowerWhispActions,
+    onOpenDrawer: (() -> Unit)?,
+) {
     val selected = uiState.selectedDictation
     if (selected != null) {
-        HistoryDetail(selected, actions)
+        HistoryDetail(selected, uiState, actions)
         return
     }
+    val visibleHistory = remember(uiState.history, uiState.historyQuery) {
+        val query = uiState.historyQuery.trim()
+        if (query.isEmpty()) {
+            uiState.history
+        } else {
+            uiState.history.filter { item ->
+                item.originalText.contains(query, ignoreCase = true) ||
+                    item.safeText.contains(query, ignoreCase = true) ||
+                    item.refinedText.contains(query, ignoreCase = true)
+            }
+        }
+    }
     ScreenColumn("history-screen") {
-        ScreenHeader("History", "Raw speech, refined text, and processing outcome")
+        DestinationHeader("History", onOpenDrawer)
         FlowerWhispTextField(
             value = uiState.historyQuery,
             onValueChange = actions.onSearchHistory,
@@ -862,14 +1070,14 @@ private fun HistoryScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActio
             singleLine = true,
         )
         when {
-            uiState.historyLoading -> StatusPanel(Icons.Outlined.History, "Loading history", "Your saved dictations are being loaded.")
+            uiState.historyLoading -> StatusPanel(Icons.Outlined.History, "Loading")
             uiState.historyError != null -> {
                 StatusPanel(Icons.Outlined.ErrorOutline, "History unavailable", uiState.historyError, Error)
-                PrimaryAction("Retry", Icons.Outlined.Refresh, onClick = actions.onRetry)
+                PrimaryAction("Retry", Icons.Outlined.Refresh, onClick = actions.onRefreshHistory)
             }
-            uiState.history.isEmpty() && uiState.historyQuery.isNotBlank() -> StatusPanel(Icons.Outlined.Search, "No matches", "Try a different word or clear the search.")
-            uiState.history.isEmpty() -> StatusPanel(Icons.Outlined.History, "No dictations yet", "Finished dictations will appear here with their raw and refined text.")
-            else -> uiState.history.forEach { item ->
+            visibleHistory.isEmpty() && uiState.historyQuery.isNotBlank() -> StatusPanel(Icons.Outlined.Search, "No matches")
+            uiState.history.isEmpty() -> StatusPanel(Icons.Outlined.History, "No dictations")
+            else -> visibleHistory.forEach { item ->
                 HistoryListItem(item, actions)
                 RowDivider()
             }
@@ -901,7 +1109,9 @@ private fun HistoryListItem(item: Dictation, actions: FlowerWhispActions) {
 }
 
 @Composable
-private fun HistoryDetail(item: Dictation, actions: FlowerWhispActions) {
+private fun HistoryDetail(item: Dictation, uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
+    var showActions by rememberSaveable(item.id) { mutableStateOf(false) }
+    var pendingDelete by remember(item.id) { mutableStateOf<HistoryDeleteTarget?>(null) }
     ScreenColumn("history-detail") {
         Row(verticalAlignment = Alignment.CenterVertically) {
             MinimumIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "Back to history", onClick = actions.onCloseHistory)
@@ -913,28 +1123,164 @@ private fun HistoryDetail(item: Dictation, actions: FlowerWhispActions) {
             ) { actions.onFavoriteHistory(item.id, !item.isFavorite) }
         }
         Text(formatDate(item.createdAtEpochMs), color = SecondaryText)
-        SectionTitle("Raw")
-        TranscriptBlock(item.originalText.ifBlank { "No raw transcript was saved." })
-        SectionTitle("Refined")
-        TranscriptBlock(item.refinedText.ifBlank { "No refined text was produced." })
-        SectionTitle("Outcome")
-        FeatureSurface {
+        SectionTitle("Transcript")
+        TranscriptBlock(item.refinedText.ifBlank { item.safeText.ifBlank { item.originalText } })
+        if (item.originalText.isNotBlank() && item.originalText != item.refinedText) {
+            SectionTitle("Original")
+            TranscriptBlock(item.originalText)
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             OutcomeLabel(item.status)
-            Text(outcomeDescription(item.status), style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
-            if (item.recoveryAudioPath != null) Text("Recovery audio is available.", style = MaterialTheme.typography.bodyMedium, color = Warning)
+            Text(cleanupLabel(item.cleanupStatus), style = MaterialTheme.typography.labelMedium, color = SecondaryText)
+            Spacer(Modifier.weight(1f))
+            if (item.recoveryAudioPath != null) Text("Audio saved", style = MaterialTheme.typography.labelMedium, color = Warning)
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            SecondaryAction("Copy", Icons.Outlined.ContentCopy) { actions.onCopyHistory(item.id) }
-            SecondaryAction("Share", Icons.Outlined.Share) { actions.onShareHistory(item.id) }
+        item.cleanupError?.takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = Error) }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.End,
+        ) {
+            if (item.recoveryAudioPath != null) {
+                MinimumIconButton(
+                    if (uiState.playingDictationId == item.id) Icons.Outlined.Stop else Icons.Outlined.GraphicEq,
+                    if (uiState.playingDictationId == item.id) "Stop audio" else "Play audio",
+                    Clay,
+                ) { actions.onPlayHistory(item.id) }
+            }
+            MinimumIconButton(Icons.Outlined.ContentCopy, "Copy transcript") { actions.onCopyHistory(item.id) }
+            MinimumIconButton(Icons.Outlined.MoreHoriz, "More transcript actions") { showActions = true }
         }
-        if (item.status != DictationStatus.COMPLETE) PrimaryAction("Retry processing", Icons.Outlined.Refresh) { actions.onRetryHistory(item.id) }
-        SecondaryAction("Delete", Icons.Outlined.DeleteOutline) { actions.onDeleteHistory(item.id) }
+    }
+    if (showActions) {
+        HistoryActionsDialog(
+            item = item,
+            transforms = uiState.transforms.filter { it.enabled },
+            onDismiss = { showActions = false },
+            onRequestDeleteAudio = {
+                showActions = false
+                pendingDelete = HistoryDeleteTarget.AUDIO
+            },
+            onRequestDeleteTranscript = {
+                showActions = false
+                pendingDelete = HistoryDeleteTarget.TRANSCRIPT
+            },
+            actions = actions,
+        )
+    }
+    pendingDelete?.let { target ->
+        DeleteConfirmationDialog(
+            title = when (target) {
+                HistoryDeleteTarget.AUDIO -> "Delete saved audio?"
+                HistoryDeleteTarget.TRANSCRIPT -> if (item.recoveryAudioPath == null) {
+                    "Delete this transcript?"
+                } else {
+                    "Delete this transcript and its audio?"
+                }
+            },
+            onDismiss = { pendingDelete = null },
+            onConfirm = {
+                pendingDelete = null
+                when (target) {
+                    HistoryDeleteTarget.AUDIO -> actions.onDeleteHistoryAudio(item.id)
+                    HistoryDeleteTarget.TRANSCRIPT -> actions.onDeleteHistory(item.id)
+                }
+            },
+        )
+    }
+}
+
+private enum class HistoryDeleteTarget { AUDIO, TRANSCRIPT }
+
+@Composable
+private fun HistoryActionsDialog(
+    item: Dictation,
+    transforms: List<TransformProfile>,
+    onDismiss: () -> Unit,
+    onRequestDeleteAudio: () -> Unit,
+    onRequestDeleteTranscript: () -> Unit,
+    actions: FlowerWhispActions,
+) {
+    WhispDialog(
+        title = "Dictation actions",
+        onDismiss = onDismiss,
+        confirmLabel = "Done",
+        showCancelAction = false,
+        onConfirm = onDismiss,
+    ) {
+        if (item.originalText.isNotBlank() && item.originalText != item.refinedText) {
+            ActionRow(Icons.AutoMirrored.Outlined.Undo, "Undo AI edit", onClick = {
+                actions.onUndoHistoryCleanup(item.id)
+                onDismiss()
+            })
+            RowDivider()
+        }
+        if (item.recoveryAudioPath != null) {
+            ActionRow(Icons.Outlined.Refresh, "Retry transcript", onClick = {
+                actions.onRetryHistory(item.id)
+                onDismiss()
+            })
+            RowDivider()
+            ActionRow(Icons.Outlined.AudioFile, "Extract audio", onClick = {
+                actions.onExportHistoryAudio(item.id)
+                onDismiss()
+            })
+            RowDivider()
+        }
+        ActionRow(Icons.Outlined.Share, "Share text", onClick = {
+            actions.onShareHistory(item.id)
+            onDismiss()
+        })
+        RowDivider()
+        ActionRow(Icons.Outlined.Edit, "Send to Scratchpad", onClick = {
+            actions.onSendHistoryToScratchpad(item.id)
+            onDismiss()
+        })
+        if (transforms.isNotEmpty()) {
+            SectionTitle("Transform")
+            transforms.forEachIndexed { index, transform ->
+                ActionRow(Icons.Outlined.Refresh, transform.name, onClick = {
+                    actions.onRunHistoryTransform(item.id, transform.id)
+                    onDismiss()
+                })
+                if (index < transforms.lastIndex) RowDivider()
+            }
+        }
+        if (item.recoveryAudioPath != null) {
+            SectionTitle("Recording")
+            ActionRow(Icons.Outlined.DeleteOutline, "Delete saved audio", tint = Error, onClick = onRequestDeleteAudio)
+        }
+        SectionTitle("Delete")
+        ActionRow(Icons.Outlined.DeleteOutline, "Delete transcript", tint = Error, onClick = onRequestDeleteTranscript)
     }
 }
 
 @Composable
+private fun DeleteConfirmationDialog(
+    title: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    WhispDialog(
+        title = title,
+        onDismiss = onDismiss,
+        confirmLabel = "Delete",
+        confirmDanger = true,
+        onConfirm = onConfirm,
+    ) {}
+}
+
+@Composable
 private fun TranscriptBlock(text: String) {
-    Surface(color = SurfaceInk, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, Outline), modifier = Modifier.fillMaxWidth()) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .whispSurface(color = SurfaceInk, shape = RoundedCornerShape(16.dp), borderColor = Outline),
+    ) {
         Text(text, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(16.dp))
     }
 }
@@ -953,29 +1299,26 @@ private fun OutcomeLabel(status: DictationStatus) {
     Text(label, style = MaterialTheme.typography.labelMedium, color = tint)
 }
 
-private fun outcomeDescription(status: DictationStatus): String = when (status) {
-    DictationStatus.COMPLETE -> "Transcription and refinement completed. This record does not claim insertion unless the insertion layer reports it separately."
-    DictationStatus.RECORDING -> "Recording had not finished when this record was saved."
-    DictationStatus.PROCESSING -> "Processing had not finished when this record was saved."
-    DictationStatus.INSERTION_FAILED -> "Text was produced but direct insertion failed. Copy the refined text to recover."
-    DictationStatus.TRANSCRIPTION_FAILED -> "Audio could not be transcribed. Retry is available when recovery audio exists."
-    DictationStatus.REFINEMENT_FAILED -> "Raw text exists, but refinement failed."
-    DictationStatus.CANCELLED -> "This dictation was cancelled."
+private fun cleanupLabel(status: CleanupStatus): String = when (status) {
+    CleanupStatus.DISABLED -> "Cleanup off"
+    CleanupStatus.APPLIED -> "Cleaned"
+    CleanupStatus.UNCHANGED -> "Unchanged"
+    CleanupStatus.FAILED -> "Safe fallback"
 }
 
 @Composable
-private fun LibraryScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
-    ScreenColumn("library-screen") {
-        ScreenHeader("Library", "Words, reusable text, and writing style")
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            LibrarySection.entries.forEach { section ->
-                SelectRow(section.label, selected = uiState.librarySection == section) { actions.onLibrarySectionChanged(section) }
-            }
-        }
-        when (uiState.librarySection) {
+private fun LibraryScreen(
+    uiState: FlowerWhispUiState,
+    actions: FlowerWhispActions,
+    section: LibrarySection,
+    onOpenDrawer: (() -> Unit)?,
+) {
+    ScreenColumn("library-${section.name.lowercase()}") {
+        DestinationHeader(section.label, onOpenDrawer)
+        when (section) {
             LibrarySection.DICTIONARY -> DictionarySection(uiState.dictionary, actions)
             LibrarySection.SNIPPETS -> SnippetSection(uiState.snippets, actions)
-            LibrarySection.STYLE -> StyleSection(uiState.settings.writingStyle, actions)
+            LibrarySection.STYLE -> StyleSection(uiState.settings, actions)
         }
     }
 }
@@ -985,11 +1328,13 @@ private fun DictionarySection(entries: List<DictionaryEntry>, actions: FlowerWhi
     var adding by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<DictionaryEntry?>(null) }
     PrimaryAction("Add word", Icons.Outlined.Add, onClick = { adding = true })
-    if (entries.isEmpty()) StatusPanel(Icons.AutoMirrored.Outlined.LibraryBooks, "Dictionary is empty", "Add names or terms FlowerWhisp should preserve.")
+    if (entries.isEmpty()) StatusPanel(Icons.AutoMirrored.Outlined.LibraryBooks, "No entries")
     entries.forEach { entry ->
         EditableItem(
             title = entry.spelling,
-            description = listOf(entry.pronunciationOrContext, entry.replacement).filter(String::isNotBlank).joinToString(" · ").ifBlank { "Preserve this spelling" },
+            description = listOf(entry.pronunciationOrContext, entry.replacement).filter(String::isNotBlank).joinToString(" · "),
+            enabled = entry.enabled,
+            onEnabledChange = { actions.onDictionaryEnabledChanged(entry, it) },
             onEdit = { editing = entry },
             onDelete = { actions.onDeleteDictionary(entry.id) },
         )
@@ -1012,9 +1357,16 @@ private fun SnippetSection(snippets: List<Snippet>, actions: FlowerWhispActions)
     var adding by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Snippet?>(null) }
     PrimaryAction("Add snippet", Icons.Outlined.Add, onClick = { adding = true })
-    if (snippets.isEmpty()) StatusPanel(Icons.AutoMirrored.Outlined.TextSnippet, "No snippets", "Add a spoken trigger and the text it should expand to.")
+    if (snippets.isEmpty()) StatusPanel(Icons.AutoMirrored.Outlined.TextSnippet, "No snippets")
     snippets.forEach { snippet ->
-        EditableItem(snippet.trigger, snippet.expansion, { editing = snippet }, { actions.onDeleteSnippet(snippet.id) })
+        EditableItem(
+            title = snippet.trigger,
+            description = snippet.expansion,
+            enabled = snippet.enabled,
+            onEnabledChange = { actions.onSnippetEnabledChanged(snippet, it) },
+            onEdit = { editing = snippet },
+            onDelete = { actions.onDeleteSnippet(snippet.id) },
+        )
     }
     if (adding || editing != null) {
         SnippetEditorDialog(
@@ -1038,34 +1390,43 @@ private fun DictionaryEditorDialog(
     var spelling by remember(initial) { mutableStateOf(initial?.spelling.orEmpty()) }
     var context by remember(initial) { mutableStateOf(initial?.pronunciationOrContext.orEmpty()) }
     var replacement by remember(initial) { mutableStateOf(initial?.replacement.orEmpty()) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (initial == null) "Add dictionary word" else "Edit dictionary word") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                FlowerWhispTextField(spelling, { spelling = it }, label = "Correct spelling", singleLine = true)
-                FlowerWhispTextField(context, { context = it }, label = "Pronunciation or context")
-                FlowerWhispTextField(replacement, { replacement = it }, label = "Optional replacement")
-            }
+    var correctMisspelling by remember(initial) {
+        mutableStateOf(initial == null || initial.replacement.isNotBlank() && initial.replacement != initial.spelling)
+    }
+    var scope by remember(initial) { mutableStateOf(initial?.scope ?: DictionaryScope.ALL) }
+    var isProtected by remember(initial) { mutableStateOf(initial?.isProtected ?: true) }
+    var enabled by remember(initial) { mutableStateOf(initial?.enabled ?: true) }
+    WhispDialog(
+        title = if (initial == null) "Add to dictionary" else "Edit dictionary entry",
+        onDismiss = onDismiss,
+        confirmLabel = if (initial == null) "Add word" else "Save",
+        confirmEnabled = spelling.isNotBlank() && (!correctMisspelling || replacement.isNotBlank()),
+        onConfirm = {
+            onSave(
+                DictionaryEntry(
+                    id = initial?.id ?: 0,
+                    spelling = spelling.trim(),
+                    pronunciationOrContext = context.trim(),
+                    replacement = if (correctMisspelling) replacement.trim() else spelling.trim(),
+                    scope = scope,
+                    isProtected = isProtected,
+                    enabled = enabled,
+                ),
+            )
         },
-        confirmButton = {
-            TextButton(
-                enabled = spelling.isNotBlank(),
-                onClick = {
-                    onSave(
-                        DictionaryEntry(
-                            id = initial?.id ?: 0,
-                            spelling = spelling.trim(),
-                            pronunciationOrContext = context.trim(),
-                            replacement = replacement.trim(),
-                        ),
-                    )
-                },
-            ) { Text("Save") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        containerColor = SurfaceInk,
-    )
+    ) {
+        FlowerWhispTextField(spelling, { spelling = it }, label = "Word or phrase", singleLine = true)
+        SwitchRow("Correct a misspelling", checked = correctMisspelling, onCheckedChange = { correctMisspelling = it })
+        if (correctMisspelling) {
+            FlowerWhispTextField(replacement, { replacement = it }, label = "Correct it to", singleLine = true)
+        }
+        FlowerWhispTextField(context, { context = it }, label = "Context", supportingText = "Optional")
+        SectionTitle("Applies to")
+        DictionaryScope.entries.forEach { value ->
+            SelectRow(value.dictionaryLabel(), selected = scope == value) { scope = value }
+        }
+        SwitchRow("Protect spelling", "Keep it exact during cleanup", checked = isProtected, onCheckedChange = { isProtected = it })
+    }
 }
 
 @Composable
@@ -1076,135 +1437,429 @@ private fun SnippetEditorDialog(
 ) {
     var trigger by remember(initial) { mutableStateOf(initial?.trigger.orEmpty()) }
     var expansion by remember(initial) { mutableStateOf(initial?.expansion.orEmpty()) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (initial == null) "Add snippet" else "Edit snippet") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                FlowerWhispTextField(trigger, { trigger = it }, label = "Spoken trigger", singleLine = true)
-                FlowerWhispTextField(expansion, { expansion = it }, label = "Expanded text", minLines = 3)
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = trigger.isNotBlank() && expansion.isNotBlank(),
-                onClick = { onSave(Snippet(initial?.id ?: 0, trigger.trim(), expansion.trim())) },
-            ) { Text("Save") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        containerColor = SurfaceInk,
-    )
+    var enabled by remember(initial) { mutableStateOf(initial?.enabled ?: true) }
+    WhispDialog(
+        title = if (initial == null) "Add snippet" else "Edit snippet",
+        onDismiss = onDismiss,
+        confirmLabel = if (initial == null) "Add snippet" else "Save",
+        confirmEnabled = trigger.isNotBlank() && expansion.isNotBlank(),
+        onConfirm = { onSave(Snippet(initial?.id ?: 0, trigger.trim(), expansion.trim(), enabled)) },
+    ) {
+        FlowerWhispTextField(trigger, { trigger = it }, label = "Trigger", singleLine = true)
+        FlowerWhispTextField(expansion, { expansion = it }, label = "Expanded text", minLines = 3)
+    }
 }
 
 @Composable
-private fun EditableItem(title: String, description: String, onEdit: () -> Unit, onDelete: () -> Unit) {
+private fun EditableItem(
+    title: String,
+    description: String,
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    var showActions by rememberSaveable(title) { mutableStateOf(false) }
+    var confirmDelete by rememberSaveable(title) { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
-            Text(description, style = MaterialTheme.typography.bodyMedium, color = SecondaryText, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            if (description.isNotBlank()) Text(description, style = MaterialTheme.typography.bodyMedium, color = SecondaryText, maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
-        MinimumIconButton(Icons.Outlined.Edit, "Edit $title", onClick = onEdit)
-        MinimumIconButton(Icons.Outlined.DeleteOutline, "Delete $title", Error, onDelete)
+        CompactToggle(enabled, "$title enabled", onEnabledChange)
+        MinimumIconButton(Icons.Outlined.MoreHoriz, "More actions for $title") { showActions = true }
     }
     RowDivider()
+    if (showActions) {
+        WhispDialog(
+            title = title,
+            onDismiss = { showActions = false },
+            confirmLabel = "Done",
+            showCancelAction = false,
+            onConfirm = { showActions = false },
+        ) {
+            ActionRow(Icons.Outlined.Edit, "Edit", onClick = {
+                showActions = false
+                onEdit()
+            })
+            RowDivider()
+            ActionRow(Icons.Outlined.DeleteOutline, "Delete", tint = Error, onClick = {
+                showActions = false
+                confirmDelete = true
+            })
+        }
+    }
+    if (confirmDelete) {
+        DeleteConfirmationDialog(
+            title = "Delete $title?",
+            onDismiss = { confirmDelete = false },
+            onConfirm = {
+                confirmDelete = false
+                onDelete()
+            },
+        )
+    }
+}
+
+private fun DictionaryScope.dictionaryLabel(): String = when (this) {
+    DictionaryScope.ALL -> "Everywhere"
+    DictionaryScope.PERSONAL -> "Personal apps"
+    DictionaryScope.WORK -> "Work apps"
 }
 
 @Composable
-private fun StyleSection(selected: WritingStyle, actions: FlowerWhispActions) {
-    WritingStyle.entries.forEach { style ->
-        SelectRow(style.displayName, style.instruction, style == selected) { actions.onWritingStyleChanged(style) }
+private fun StyleSection(
+    settings: com.flowerwhisp.mobile.domain.model.AppSettings,
+    actions: FlowerWhispActions,
+) {
+    var context by rememberSaveable { mutableStateOf(StyleContext.PERSONAL) }
+    var editingInstructions by rememberSaveable { mutableStateOf(false) }
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        StyleContext.entries.forEach { item ->
+            CompactAction(
+                label = item.displayName,
+                accent = item == context,
+                onClick = { context = item },
+            )
+        }
+    }
+    Text(context.appLabels(), style = MaterialTheme.typography.labelMedium, color = SecondaryText)
+    val selected = settings.styleFor(context)
+    context.availableStyles().forEach { style ->
+        SelectRow(style.displayName, selected = style == selected) {
+            actions.onContextWritingStyleChanged(context, style)
+        }
+    }
+    ValueRow(
+        title = "Instructions",
+        value = if (settings.styleInstructionsFor(context).isBlank()) "Default" else "Custom",
+        onClick = { editingInstructions = true },
+    )
+    SectionTitle("Cleanup")
+    ValueRow("Auto cleanup", settings.cleanupLevel.displayName) {
+        actions.onNavigate(FlowerWhispDestination.SETTINGS)
+    }
+    if (editingInstructions) {
+        ContextStyleInstructionsDialog(
+            context = context,
+            initial = settings.styleInstructionsFor(context),
+            onDismiss = { editingInstructions = false },
+            onSave = { value ->
+                actions.onContextStyleInstructionsChanged(context, value)
+                editingInstructions = false
+            },
+        )
     }
 }
 
 @Composable
-private fun SettingsScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActions) {
-    var apiKey by rememberSaveable { mutableStateOf("") }
-    ScreenColumn("settings-screen") {
-        ScreenHeader("Settings", "Dictation, bubble, provider, and privacy controls")
-
-        SectionTitle("Language")
-        LanguageMode.entries.forEach { mode ->
-            SelectRow(mode.displayName, selected = uiState.settings.language == mode) { actions.onLanguageChanged(mode) }
-        }
-
-        SectionTitle("Dictation")
-        SwitchRow("Automatic punctuation", "Add sentence boundaries and punctuation.", uiState.settings.autoPunctuation, actions.onAutoPunctuationChanged)
-        RowDivider()
-        SwitchRow("Remove filler words", "Remove fillers only when meaning stays intact.", uiState.settings.removeFillers, actions.onRemoveFillersChanged)
-        RowDivider()
-        SwitchRow("Spoken corrections", "Keep the final version after a spoken correction.", uiState.settings.spokenCorrections, actions.onSpokenCorrectionsChanged)
-        RowDivider()
-        SwitchRow("AI refinement", "Polish the transcript using the selected writing style.", uiState.settings.aiRefinement, actions.onAiRefinementChanged)
-
-        SectionTitle("Writing style")
-        WritingStyle.entries.forEach { style ->
-            SelectRow(style.displayName, selected = uiState.settings.writingStyle == style) { actions.onWritingStyleChanged(style) }
-        }
-
-        SectionTitle("Bubble size")
-        BubbleSize.entries.forEach { size -> SelectRow(size.name.lowercase().replaceFirstChar(Char::uppercase), selected = uiState.settings.bubbleSize == size) { actions.onBubbleSizeChanged(size) } }
-        SectionTitle("Bubble opacity")
-        BubbleOpacity.entries.forEach { opacity -> SelectRow(opacity.name.lowercase().replaceFirstChar(Char::uppercase), selected = uiState.settings.bubbleOpacity == opacity) { actions.onBubbleOpacityChanged(opacity) } }
-        SectionTitle("Idle bubble")
-        IdleBehavior.entries.forEach { behavior ->
-            val description = if (behavior == IdleBehavior.SHRINK) "Use the compact ready state." else "Keep the full ready control visible."
-            SelectRow(behavior.name.lowercase().replaceFirstChar(Char::uppercase), description, uiState.settings.idleBehavior == behavior) { actions.onIdleBehaviorChanged(behavior) }
-        }
-
-        SectionTitle("Feedback and motion")
-        SwitchRow("Haptics", "Confirm start and finish with touch feedback.", uiState.settings.haptics, actions.onHapticsChanged)
-        RowDivider()
-        SwitchRow("Reduce motion", "Use immediate state changes without scale animation.", uiState.settings.reduceMotion, actions.onReduceMotionChanged)
-
-        SectionTitle("Provider key", "Optional cloud transcription and refinement")
-        SwitchRow(
-            "Mock development mode",
-            "Use deterministic local sample output. Turn this off to send audio and refinement requests to Groq.",
-            uiState.settings.useMockEngines,
-            actions.onUseMockEnginesChanged,
+private fun ContextStyleInstructionsDialog(
+    context: StyleContext,
+    initial: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var instructions by remember(context, initial) { mutableStateOf(initial) }
+    WhispDialog(
+        title = "${context.displayName} instructions",
+        onDismiss = onDismiss,
+        confirmLabel = "Save",
+        onConfirm = { onSave(instructions) },
+    ) {
+        FlowerWhispTextField(
+            value = instructions,
+            onValueChange = { instructions = it.take(2_000) },
+            label = "Instructions",
+            minLines = 5,
+            supportingText = "Style only. Meaning stays unchanged.",
         )
-        RowDivider()
-        Text(if (uiState.groqApiKeyConfigured) "A Groq API key is saved securely." else "No Groq API key is saved.", color = SecondaryText, style = MaterialTheme.typography.bodyMedium)
-        Text("Stored encrypted on this device. It is used only when mock development mode is off.", color = MutedText, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+private fun StyleContext.availableStyles(): List<WritingStyle> = when (this) {
+    StyleContext.PERSONAL -> listOf(WritingStyle.FORMAL, WritingStyle.CASUAL, WritingStyle.VERY_CASUAL)
+    StyleContext.WORK -> listOf(WritingStyle.FORMAL, WritingStyle.CASUAL, WritingStyle.ENTHUSIASTIC)
+    StyleContext.EMAIL -> listOf(WritingStyle.FORMAL, WritingStyle.CASUAL)
+    StyleContext.OTHER -> listOf(WritingStyle.NATURAL, WritingStyle.PROFESSIONAL, WritingStyle.CONCISE)
+}
+
+private fun StyleContext.appLabels(): String = when (this) {
+    StyleContext.PERSONAL -> "WhatsApp · Messages · Telegram · Signal"
+    StyleContext.WORK -> "Slack · Teams · LinkedIn"
+    StyleContext.EMAIL -> "Gmail · Outlook · Email"
+    StyleContext.OTHER -> "Docs · Notes · Browsers"
+}
+
+@Composable
+private fun TransformsScreen(
+    uiState: FlowerWhispUiState,
+    actions: FlowerWhispActions,
+    onOpenDrawer: (() -> Unit)?,
+) {
+    var adding by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<TransformProfile?>(null) }
+    ScreenColumn("transforms-screen") {
+        DestinationHeader("Transforms", onOpenDrawer)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            CompactAction("New transform", Icons.Outlined.Add, onClick = { adding = true })
+        }
+        if (uiState.transforms.isEmpty()) StatusPanel(Icons.Outlined.Refresh, "No transforms")
+        uiState.transforms.forEach { transform ->
+            TransformItem(
+                transform = transform,
+                onEnabledChange = { actions.onSaveTransform(transform.copy(enabled = it)) },
+                onEdit = { editing = transform },
+                onDelete = { actions.onDeleteTransform(transform.id) },
+            )
+        }
+    }
+    if (adding || editing != null) {
+        TransformEditorDialog(
+            initial = editing,
+            onDismiss = {
+                adding = false
+                editing = null
+            },
+            onSave = { transform ->
+                actions.onSaveTransform(transform)
+                adding = false
+                editing = null
+            },
+        )
+    }
+}
+
+@Composable
+private fun TransformItem(
+    transform: TransformProfile,
+    onEnabledChange: (Boolean) -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    var showActions by rememberSaveable(transform.id, transform.name) { mutableStateOf(false) }
+    var confirmDelete by rememberSaveable(transform.id, transform.name) { mutableStateOf(false) }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(transform.name, style = MaterialTheme.typography.titleMedium)
+            if (transform.description.isNotBlank()) {
+                Text(transform.description, style = MaterialTheme.typography.bodyMedium, color = SecondaryText, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        CompactToggle(transform.enabled, "${transform.name} enabled", onEnabledChange)
+        MinimumIconButton(Icons.Outlined.MoreHoriz, "More actions for ${transform.name}") { showActions = true }
+    }
+    RowDivider()
+    if (showActions) {
+        WhispDialog(
+            title = transform.name,
+            onDismiss = { showActions = false },
+            confirmLabel = "Done",
+            showCancelAction = false,
+            onConfirm = { showActions = false },
+        ) {
+            ActionRow(Icons.Outlined.Edit, "Edit prompt", onClick = {
+                showActions = false
+                onEdit()
+            })
+            if (!transform.builtIn) {
+                RowDivider()
+                ActionRow(Icons.Outlined.DeleteOutline, "Delete", tint = Error, onClick = {
+                    showActions = false
+                    confirmDelete = true
+                })
+            }
+        }
+    }
+    if (confirmDelete) {
+        DeleteConfirmationDialog(
+            title = "Delete ${transform.name}?",
+            onDismiss = { confirmDelete = false },
+            onConfirm = {
+                confirmDelete = false
+                onDelete()
+            },
+        )
+    }
+}
+
+@Composable
+private fun TransformEditorDialog(
+    initial: TransformProfile?,
+    onDismiss: () -> Unit,
+    onSave: (TransformProfile) -> Unit,
+) {
+    var name by remember(initial) { mutableStateOf(initial?.name.orEmpty()) }
+    var description by remember(initial) { mutableStateOf(initial?.description.orEmpty()) }
+    var instructions by remember(initial) { mutableStateOf(initial?.instructions.orEmpty()) }
+    var enabled by remember(initial) { mutableStateOf(initial?.enabled ?: true) }
+    WhispDialog(
+        title = if (initial == null) "Add transform" else "Edit transform",
+        onDismiss = onDismiss,
+        confirmLabel = "Save",
+        confirmEnabled = name.isNotBlank() && instructions.isNotBlank(),
+        onConfirm = {
+            onSave(
+                TransformProfile(
+                    id = initial?.id ?: 0,
+                    name = name.trim(),
+                    description = description.trim(),
+                    instructions = instructions.trim(),
+                    enabled = enabled,
+                    builtIn = initial?.builtIn ?: false,
+                ),
+            )
+        },
+    ) {
+        FlowerWhispTextField(name, { name = it }, "Name", singleLine = true)
+        FlowerWhispTextField(description, { description = it }, "Description", singleLine = true)
+        FlowerWhispTextField(instructions, { instructions = it }, "Instructions", minLines = 5)
+        SwitchRow("Enabled", checked = enabled, onCheckedChange = { enabled = it })
+    }
+}
+
+@Composable
+private fun ScratchpadScreen(
+    uiState: FlowerWhispUiState,
+    actions: FlowerWhispActions,
+    onOpenDrawer: (() -> Unit)?,
+) {
+    var draft by rememberSaveable(uiState.settings.scratchpad) { mutableStateOf(uiState.settings.scratchpad) }
+    ScreenColumn("scratchpad-screen") {
+        DestinationHeader("Scratchpad", onOpenDrawer)
+        FlowerWhispTextField(
+            value = draft,
+            onValueChange = { draft = it },
+            label = "Text",
+            modifier = Modifier.fillMaxWidth().heightIn(min = 280.dp),
+            minLines = 12,
+        )
+        PrimaryAction("Save", Icons.Outlined.Check, enabled = draft != uiState.settings.scratchpad) {
+            actions.onSaveScratchpad(draft)
+        }
+        uiState.transforms.filter { it.enabled }.forEach { transform ->
+            ActionRow(Icons.Outlined.Refresh, transform.name, onClick = { actions.onRunScratchpadTransform(transform.id) })
+            RowDivider()
+        }
+        if (uiState.transformBusy) Text("Working", style = MaterialTheme.typography.labelMedium, color = Clay)
+    }
+}
+
+@Composable
+private fun TransformPreviewDialog(preview: TransformPreview, actions: FlowerWhispActions) {
+    WhispDialog(
+        title = preview.name,
+        onDismiss = actions.onDismissTransform,
+        confirmLabel = "Copy",
+        onConfirm = {
+            actions.onCopy(preview.result)
+            actions.onDismissTransform()
+        },
+    ) {
+        TranscriptBlock(preview.result)
+    }
+}
+
+@Composable
+private fun SettingsScreen(
+    uiState: FlowerWhispUiState,
+    actions: FlowerWhispActions,
+    onOpenDrawer: (() -> Unit)?,
+) {
+    // Keep the plaintext draft in this composition only; the repository stores
+    // only the encrypted value after an explicit save.
+    var apiKey by remember { mutableStateOf("") }
+    var panel by rememberSaveable { mutableStateOf<SettingsPanel?>(null) }
+    var confirmRemoveKey by rememberSaveable { mutableStateOf(false) }
+    ScreenColumn("settings-screen") {
+        DestinationHeader("Settings", onOpenDrawer)
+
+        uiState.serviceMessage?.takeIf(String::isNotBlank)?.let { message ->
+            Text(message, style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
+        }
+
+        SectionTitle("Provider")
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Groq Cloud", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+            Text(if (uiState.groqApiKeyConfigured) "Saved" else "No key", style = MaterialTheme.typography.labelMedium, color = if (uiState.groqApiKeyConfigured) Clay else Warning)
+        }
         FlowerWhispTextField(
             value = apiKey,
             onValueChange = { apiKey = it },
-            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).testTag("groq-api-key"),
-            label = "Groq API key",
+            modifier = Modifier.fillMaxWidth().testTag("groq-api-key"),
+            label = if (uiState.groqApiKeyConfigured) "Replace Groq key" else "Groq API key",
             visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             singleLine = true,
+            supportingText = "Stored with Android Keystore",
         )
-        PrimaryAction("Save API key", Icons.Outlined.Lock, enabled = apiKey.isNotBlank()) {
-            actions.onSaveApiKey(apiKey.trim())
-            apiKey = ""
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CompactAction("Save key", Icons.Outlined.Lock, enabled = apiKey.trim().length >= 10) {
+                actions.onSaveApiKey(apiKey.trim())
+                apiKey = ""
+            }
+            if (uiState.groqApiKeyConfigured) {
+                CompactAction("Remove", Icons.Outlined.DeleteOutline, accent = false, onClick = { confirmRemoveKey = true })
+            }
         }
-        if (uiState.groqApiKeyConfigured) SecondaryAction("Clear saved key", Icons.Outlined.DeleteOutline, actions.onClearApiKey)
+        ValueRow("Transcription model", uiState.settings.groqTranscriptionModel) { panel = SettingsPanel.TRANSCRIPTION_MODEL }
+        RowDivider()
+        ValueRow("Cleanup model", uiState.settings.groqRefinementModel) { panel = SettingsPanel.CLEANUP_MODEL }
 
-        SectionTitle("Refinement prompt")
-        FlowerWhispTextField(
-            value = uiState.refinementPromptDraft,
-            onValueChange = actions.onRefinementPromptChanged,
-            modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp),
-            label = "Instructions",
-            minLines = 5,
-        )
+        SectionTitle("Writing")
+        ValueRow("Language", uiState.settings.language.displayName) { panel = SettingsPanel.LANGUAGE }
+        RowDivider()
+        ValueRow("Cleanup", uiState.settings.cleanupLevel.displayName) { panel = SettingsPanel.CLEANUP }
+        RowDivider()
+        ValueRow("Style", "By app") {
+            actions.onNavigate(FlowerWhispDestination.STYLE)
+        }
+
+        SectionTitle("Dictation")
+        SwitchRow("Automatic punctuation", checked = uiState.settings.autoPunctuation, onCheckedChange = actions.onAutoPunctuationChanged)
+        RowDivider()
+        SwitchRow("Remove filler words", checked = uiState.settings.removeFillers, onCheckedChange = actions.onRemoveFillersChanged)
+        RowDivider()
+        SwitchRow("Spoken corrections", checked = uiState.settings.spokenCorrections, onCheckedChange = actions.onSpokenCorrectionsChanged)
 
         SectionTitle("Privacy")
-        SwitchRow(
-            "Privacy mode",
-            "Do not retain successful transcripts in History. Failed recordings remain available for recovery. Cloud processing still follows the provider selected above.",
-            uiState.settings.privacyMode,
-            actions.onPrivacyChanged,
-        )
+        ValueRow("Retention", uiState.settings.retentionMode.settingsLabel()) { panel = SettingsPanel.RETENTION }
+
+        SectionTitle("Appearance")
+        ValueRow("Theme", uiState.settings.appearanceMode.displayName) { panel = SettingsPanel.APPEARANCE }
+        RowDivider()
+        ValueRow("Bubble size", uiState.settings.bubbleSize.settingsLabel()) { panel = SettingsPanel.BUBBLE_SIZE }
+        RowDivider()
+        ValueRow("Bubble opacity", uiState.settings.bubbleOpacity.settingsLabel()) { panel = SettingsPanel.BUBBLE_OPACITY }
+        RowDivider()
+        ValueRow("Idle bubble", uiState.settings.idleBehavior.settingsLabel()) { panel = SettingsPanel.IDLE_BEHAVIOR }
+
+        SectionTitle("Feedback")
+        SwitchRow("Haptics", checked = uiState.settings.haptics, onCheckedChange = actions.onHapticsChanged)
+        RowDivider()
+        SwitchRow("Sound cues", checked = uiState.settings.playSounds, onCheckedChange = actions.onPlaySoundsChanged)
+        RowDivider()
+        SwitchRow("Pause other audio", checked = uiState.settings.muteMusicWhileDictating, onCheckedChange = actions.onMuteMusicChanged)
+        RowDivider()
+        SwitchRow("Reduce motion", checked = uiState.settings.reduceMotion, onCheckedChange = actions.onReduceMotionChanged)
 
         SectionTitle("Android access")
-        ActionRow(Icons.Outlined.Layers, "Bubble overlay", if (uiState.capabilities.overlayEnabled) "Available" else "Required for the floating bubble", if (uiState.capabilities.overlayEnabled) "Ready" else "Fix", if (uiState.capabilities.overlayEnabled) Clay else Warning, actions.onRequestOverlay)
+        ActionRow(Icons.Outlined.Layers, "Overlay", value = if (uiState.capabilities.overlayEnabled) "On" else "Fix", tint = if (uiState.capabilities.overlayEnabled) Clay else Warning, onClick = actions.onRequestOverlay)
         RowDivider()
-        ActionRow(Icons.Outlined.AccessibilityNew, "Text insertion", if (uiState.capabilities.accessibilityEnabled) "Available" else "Required to insert in the focused field", if (uiState.capabilities.accessibilityEnabled) "Ready" else "Fix", if (uiState.capabilities.accessibilityEnabled) Clay else Warning, actions.onRequestAccessibility)
+        ActionRow(Icons.Outlined.AccessibilityNew, "Text insertion", value = if (uiState.capabilities.textInsertionReady) "On" else "Fix", tint = if (uiState.capabilities.textInsertionReady) Clay else Warning, onClick = actions.onRequestAccessibility)
         RowDivider()
-        ActionRow(Icons.Outlined.Mic, "Microphone", if (uiState.capabilities.microphoneGranted) "Available" else "Required while recording", if (uiState.capabilities.microphoneGranted) "Ready" else "Fix", if (uiState.capabilities.microphoneGranted) Clay else Warning, actions.onRequestMicrophone)
+        ActionRow(Icons.Outlined.Mic, "Microphone", value = if (uiState.capabilities.microphoneGranted) "On" else "Fix", tint = if (uiState.capabilities.microphoneGranted) Clay else Warning, onClick = actions.onRequestMicrophone)
         RowDivider()
-        ActionRow(Icons.Outlined.Notifications, "Notifications", if (uiState.capabilities.notificationsGranted) "Available" else "Required for reliable foreground operation", if (uiState.capabilities.notificationsGranted) "Ready" else "Fix", if (uiState.capabilities.notificationsGranted) Clay else Warning, actions.onRequestNotifications)
+        ActionRow(Icons.Outlined.Notifications, "Notifications", value = if (uiState.capabilities.notificationsGranted) "On" else "Fix", tint = if (uiState.capabilities.notificationsGranted) Clay else Warning, onClick = actions.onRequestNotifications)
 
         SectionTitle("Service")
         if (uiState.settings.snoozedUntilEpochMs > System.currentTimeMillis() || uiState.bubbleState is BubbleState.Snoozed) {
@@ -1212,6 +1867,166 @@ private fun SettingsScreen(uiState: FlowerWhispUiState, actions: FlowerWhispActi
         } else SecondaryAction("Snooze bubble", Icons.Outlined.Snooze, actions.onSnooze)
         SecondaryAction("Restart service", Icons.Outlined.RestartAlt, actions.onRestartService)
     }
+
+    when (panel) {
+        SettingsPanel.LANGUAGE -> SettingsChoiceDialog(
+            title = "Dictation language",
+            values = LanguageMode.entries,
+            selected = uiState.settings.language,
+            label = LanguageMode::displayName,
+            onSelect = actions.onLanguageChanged,
+            onDismiss = { panel = null },
+        )
+        SettingsPanel.TRANSCRIPTION_MODEL -> SettingsChoiceDialog(
+            title = "Transcription model",
+            values = listOf("whisper-large-v3", "whisper-large-v3-turbo"),
+            selected = uiState.settings.groqTranscriptionModel,
+            label = { it },
+            onSelect = actions.onTranscriptionModelChanged,
+            onDismiss = { panel = null },
+        )
+        SettingsPanel.CLEANUP_MODEL -> SettingsChoiceDialog(
+            title = "Cleanup model",
+            values = listOf("openai/gpt-oss-20b", "openai/gpt-oss-120b"),
+            selected = uiState.settings.groqRefinementModel,
+            label = { it },
+            onSelect = actions.onRefinementModelChanged,
+            onDismiss = { panel = null },
+        )
+        SettingsPanel.RETENTION -> SettingsChoiceDialog(
+            title = "Retention",
+            values = RetentionMode.entries,
+            selected = uiState.settings.retentionMode,
+            label = RetentionMode::settingsLabel,
+            onSelect = actions.onRetentionChanged,
+            onDismiss = { panel = null },
+        )
+        SettingsPanel.APPEARANCE -> SettingsChoiceDialog(
+            title = "Theme",
+            values = AppearanceMode.entries,
+            selected = uiState.settings.appearanceMode,
+            label = AppearanceMode::displayName,
+            onSelect = actions.onAppearanceChanged,
+            onDismiss = { panel = null },
+        )
+        SettingsPanel.BUBBLE_SIZE -> SettingsChoiceDialog(
+            title = "Bubble size",
+            values = BubbleSize.entries,
+            selected = uiState.settings.bubbleSize,
+            label = BubbleSize::settingsLabel,
+            onSelect = actions.onBubbleSizeChanged,
+            onDismiss = { panel = null },
+        )
+        SettingsPanel.BUBBLE_OPACITY -> SettingsChoiceDialog(
+            title = "Bubble opacity",
+            values = BubbleOpacity.entries,
+            selected = uiState.settings.bubbleOpacity,
+            label = BubbleOpacity::settingsLabel,
+            onSelect = actions.onBubbleOpacityChanged,
+            onDismiss = { panel = null },
+        )
+        SettingsPanel.IDLE_BEHAVIOR -> SettingsChoiceDialog(
+            title = "Idle bubble",
+            values = IdleBehavior.entries,
+            selected = uiState.settings.idleBehavior,
+            label = IdleBehavior::settingsLabel,
+            onSelect = actions.onIdleBehaviorChanged,
+            onDismiss = { panel = null },
+        )
+        SettingsPanel.CLEANUP -> CleanupSettingsDialog(uiState.settings, actions) { panel = null }
+        null -> Unit
+    }
+    if (confirmRemoveKey) {
+        DeleteConfirmationDialog(
+            title = "Remove the Groq key?",
+            onDismiss = { confirmRemoveKey = false },
+            onConfirm = {
+                confirmRemoveKey = false
+                actions.onClearApiKey()
+            },
+        )
+    }
+}
+
+private enum class SettingsPanel {
+    LANGUAGE,
+    CLEANUP,
+    TRANSCRIPTION_MODEL,
+    CLEANUP_MODEL,
+    RETENTION,
+    APPEARANCE,
+    BUBBLE_SIZE,
+    BUBBLE_OPACITY,
+    IDLE_BEHAVIOR,
+}
+
+@Composable
+private fun <T> SettingsChoiceDialog(
+    title: String,
+    values: List<T>,
+    selected: T,
+    label: (T) -> String,
+    onSelect: (T) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    WhispDialog(
+        title = title,
+        onDismiss = onDismiss,
+        confirmLabel = "Done",
+        showCancelAction = false,
+        onConfirm = onDismiss,
+    ) {
+        values.forEach { value ->
+            SelectRow(label(value), selected = selected == value) { onSelect(value) }
+        }
+    }
+}
+
+@Composable
+private fun CleanupSettingsDialog(
+    settings: com.flowerwhisp.mobile.domain.model.AppSettings,
+    actions: FlowerWhispActions,
+    onDismiss: () -> Unit,
+) {
+    var level by rememberSaveable { mutableStateOf(settings.cleanupLevel) }
+    var prompt by rememberSaveable { mutableStateOf(settings.cleanupPrompt(level)) }
+    WhispDialog(
+        title = "Cleanup",
+        description = "Original transcript stays available",
+        onDismiss = onDismiss,
+        confirmLabel = "Save",
+        onConfirm = {
+            actions.onCleanupLevelChanged(level)
+            actions.onCleanupPromptChanged(level, prompt)
+            onDismiss()
+        },
+    ) {
+        CleanupLevel.entries.forEach { candidate ->
+            SelectRow(candidate.displayName, selected = level == candidate) {
+                level = candidate
+                prompt = settings.cleanupPrompt(candidate)
+            }
+        }
+        FlowerWhispTextField(
+            value = prompt,
+            onValueChange = { prompt = it },
+            label = "Instructions",
+            minLines = 6,
+        )
+    }
+}
+
+private fun RetentionMode.settingsLabel(): String = when (this) {
+    RetentionMode.FOREVER -> "Keep forever"
+    RetentionMode.HOURS_24 -> "Delete after 24 hours"
+    RetentionMode.NEVER -> "Never store transcript text"
+}
+
+private fun BubbleSize.settingsLabel(): String = name.lowercase().replaceFirstChar(Char::uppercase)
+private fun BubbleOpacity.settingsLabel(): String = name.lowercase().replaceFirstChar(Char::uppercase)
+private fun IdleBehavior.settingsLabel(): String = when (this) {
+    IdleBehavior.FULL -> "Always full"
+    IdleBehavior.SHRINK -> "Shrink when idle"
 }
 
 @Composable
@@ -1229,11 +2044,14 @@ private fun ScreenColumn(tag: String, content: @Composable androidx.compose.foun
 }
 
 @Composable
-private fun StatusPanel(icon: ImageVector, title: String, description: String, tint: Color = SecondaryText) {
-    FeatureSurface {
+private fun StatusPanel(icon: ImageVector, title: String, description: String? = null, tint: Color = SecondaryText) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(28.dp))
-        Text(title, style = MaterialTheme.typography.titleLarge)
-        Text(description, color = SecondaryText, style = MaterialTheme.typography.bodyMedium)
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        description?.let { Text(it, color = SecondaryText, style = MaterialTheme.typography.bodyMedium) }
     }
 }
 
