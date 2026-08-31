@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -42,11 +43,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -55,6 +57,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
@@ -77,7 +80,6 @@ import com.flowerwhisp.mobile.ui.theme.SecondaryText
 import com.flowerwhisp.mobile.ui.theme.SurfaceElevated
 import com.flowerwhisp.mobile.ui.theme.SurfaceInk
 import com.flowerwhisp.mobile.ui.theme.SurfaceSelected
-import kotlinx.coroutines.launch
 
 private val PanelShape = RoundedCornerShape(14.dp)
 private val ControlShape = RoundedCornerShape(8.dp)
@@ -159,13 +161,23 @@ fun FlowerWhispTextField(
     val interactionSource = remember { MutableInteractionSource() }
     var focused by remember { mutableStateOf(false) }
     val bringIntoViewRequester = remember { BringIntoViewRequester() }
-    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val imeBottom = WindowInsets.ime.getBottom(density)
     val shape = ControlShape
     val floatingLabel = focused || value.isNotEmpty()
     val borderColor = when {
         errorText != null -> Error
         focused -> Clay
         else -> Outline
+    }
+
+    LaunchedEffect(focused, imeBottom) {
+        if (focused) {
+            // The first request handles focus; the inset-keyed request runs again after the IME
+            // has resized the window, which is the moment the final visible bounds are known.
+            withFrameNanos { }
+            bringIntoViewRequester.bringIntoView()
+        }
     }
 
     BasicTextField(
@@ -177,9 +189,6 @@ fun FlowerWhispTextField(
             .bringIntoViewRequester(bringIntoViewRequester)
             .onFocusChanged { state ->
                 focused = state.isFocused
-                if (state.isFocused) {
-                    scope.launch { bringIntoViewRequester.bringIntoView() }
-                }
             }
             .whispSurface(color = SurfaceInk, shape = shape, borderColor = borderColor, borderWidth = if (focused) 1.5.dp else 1.dp),
         textStyle = MaterialTheme.typography.bodyLarge.copy(color = PrimaryText),
@@ -285,6 +294,7 @@ fun SecondaryAction(label: String, icon: ImageVector? = null, onClick: () -> Uni
 @Composable
 fun CompactAction(
     label: String,
+    modifier: Modifier = Modifier,
     icon: ImageVector? = null,
     accent: Boolean = true,
     danger: Boolean = false,
@@ -308,7 +318,7 @@ fun CompactAction(
         else -> PrimaryText
     }
     Box(
-        modifier = Modifier
+        modifier = modifier
             .heightIn(min = 48.dp)
             .whispSurface(
                 color = if (enabled) fill else SurfaceSelected,
@@ -634,6 +644,7 @@ fun WhispDialog(
             dismissOnBackPress = true,
             dismissOnClickOutside = true,
             usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
         ),
     ) {
         val scrimSource = remember { MutableInteractionSource() }
@@ -676,16 +687,53 @@ fun WhispDialog(
                     content = content,
                 )
                 RowDivider()
-                Row(
+                BoxWithConstraints(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (showCancelAction) {
-                        CompactAction("Cancel", accent = false, onClick = onDismiss)
-                        Spacer(Modifier.width(8.dp))
+                    val stackActions = showCancelAction && maxWidth < 300.dp
+                    if (stackActions) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            CompactAction("Cancel", modifier = Modifier.fillMaxWidth(), accent = false, onClick = onDismiss)
+                            CompactAction(
+                                confirmLabel,
+                                modifier = Modifier.fillMaxWidth(),
+                                accent = true,
+                                danger = confirmDanger,
+                                enabled = confirmEnabled,
+                                onClick = onConfirm,
+                            )
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (showCancelAction) {
+                                CompactAction("Cancel", modifier = Modifier.weight(1f), accent = false, onClick = onDismiss)
+                                Spacer(Modifier.width(8.dp))
+                                CompactAction(
+                                    confirmLabel,
+                                    modifier = Modifier.weight(1f),
+                                    accent = true,
+                                    danger = confirmDanger,
+                                    enabled = confirmEnabled,
+                                    onClick = onConfirm,
+                                )
+                            } else {
+                                CompactAction(
+                                    confirmLabel,
+                                    accent = true,
+                                    danger = confirmDanger,
+                                    enabled = confirmEnabled,
+                                    onClick = onConfirm,
+                                )
+                            }
+                        }
                     }
-                    CompactAction(confirmLabel, accent = true, danger = confirmDanger, enabled = confirmEnabled, onClick = onConfirm)
                 }
             }
         }

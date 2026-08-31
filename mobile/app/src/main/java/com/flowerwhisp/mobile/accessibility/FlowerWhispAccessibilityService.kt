@@ -1,15 +1,18 @@
 package com.flowerwhisp.mobile.accessibility
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Rect
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.flowerwhisp.mobile.MainActivity
 import com.flowerwhisp.mobile.domain.ports.InsertionResult
 import com.flowerwhisp.mobile.domain.ports.TextInsertionGateway
 import com.flowerwhisp.mobile.overlay.BubbleOverlayController
 import com.flowerwhisp.mobile.overlay.SettingsBubblePositionStore
+import com.flowerwhisp.mobile.overlay.keepsOverlayVisible
 import com.flowerwhisp.mobile.platform.CapabilityMonitor
 import com.flowerwhisp.mobile.platform.SensitiveClipboard
 import com.flowerwhisp.mobile.service.DictationDependencyRegistry
@@ -46,6 +49,7 @@ class FlowerWhispAccessibilityService : AccessibilityService() {
             onExplicitTap = ::onBubbleTapped,
             onPushToTalkStart = ::onPushToTalkStarted,
             onPushToTalkFinish = ::onPushToTalkFinished,
+            onCancel = ::onBubbleCancelled,
             onFailure = DictationRuntime::onOverlayFailure,
         )
         if (settingsRepository != null) {
@@ -111,7 +115,7 @@ class FlowerWhispAccessibilityService : AccessibilityService() {
     }
 
     private fun onBubbleTapped() {
-        when (DictationRuntime.bubbleState.value) {
+        when (val state = DictationRuntime.bubbleState.value) {
             com.flowerwhisp.mobile.domain.model.BubbleState.Ready -> {
                 when (val capture = captureTargetInternal()) {
                     is TargetCaptureResult.Captured -> {
@@ -126,7 +130,20 @@ class FlowerWhispAccessibilityService : AccessibilityService() {
             is com.flowerwhisp.mobile.domain.model.BubbleState.Recording -> {
                 DictationService.stopFromBubble(this)
             }
-            else -> Unit
+            is com.flowerwhisp.mobile.domain.model.BubbleState.InsertionFallback -> {
+                if (!SensitiveClipboard.copy(this, state.text)) {
+                    DictationRuntime.onServiceError("FlowerWhisp could not copy the recovered text")
+                }
+            }
+            is com.flowerwhisp.mobile.domain.model.BubbleState.AccessibilityError,
+            is com.flowerwhisp.mobile.domain.model.BubbleState.ServiceError,
+            is com.flowerwhisp.mobile.domain.model.BubbleState.Success,
+            com.flowerwhisp.mobile.domain.model.BubbleState.Reconnecting,
+            is com.flowerwhisp.mobile.domain.model.BubbleState.Snoozed,
+            -> openMainApp()
+            com.flowerwhisp.mobile.domain.model.BubbleState.Hidden,
+            is com.flowerwhisp.mobile.domain.model.BubbleState.Processing,
+            -> Unit
         }
     }
 
@@ -137,8 +154,29 @@ class FlowerWhispAccessibilityService : AccessibilityService() {
     }
 
     private fun onPushToTalkFinished() {
-        if (DictationRuntime.bubbleState.value is com.flowerwhisp.mobile.domain.model.BubbleState.Recording) {
-            DictationService.stopFromBubble(this)
+        // The release can arrive before the foreground service publishes Recording. Android keeps
+        // startService actions ordered, so always enqueue the matching stop and avoid a stuck mic.
+        DictationService.stopFromBubble(this)
+    }
+
+    private fun onBubbleCancelled() {
+        when (DictationRuntime.bubbleState.value) {
+            is com.flowerwhisp.mobile.domain.model.BubbleState.Recording,
+            is com.flowerwhisp.mobile.domain.model.BubbleState.Processing,
+            com.flowerwhisp.mobile.domain.model.BubbleState.Reconnecting,
+            -> DictationService.cancel(this)
+            else -> Unit
+        }
+    }
+
+    private fun openMainApp() {
+        runCatching {
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            )
+        }.onFailure {
+            DictationRuntime.onServiceError("FlowerWhisp could not open the recovery screen")
         }
     }
 
@@ -150,7 +188,9 @@ class FlowerWhispAccessibilityService : AccessibilityService() {
     private fun reconcileOverlay() {
         if (!::capabilityMonitor.isInitialized) return
         val capabilities = capabilityMonitor.snapshot(accessibilityConnected = true)
-        val mayShow = !snoozed && fieldState.value.available && capabilities.canShowBubble
+        val state = DictationRuntime.bubbleState.value
+        val mayShow = !snoozed && capabilities.canShowBubble &&
+            (fieldState.value.available || state.keepsOverlayVisible)
         DictationRuntime.onBubbleAvailabilityChanged(mayShow)
         overlayController?.setVisibilityAllowed(mayShow)
     }

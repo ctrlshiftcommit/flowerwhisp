@@ -1,3 +1,5 @@
+import type { WritingApplicationContext } from './writingContext'
+
 /**
  * Shared contracts for the text-processing prompt pipeline.
  *
@@ -71,6 +73,7 @@ export interface PromptContext {
   readonly style?: PromptStyleInput
   readonly styleId?: string
   readonly styleRules?: readonly string[]
+  readonly applicationContext?: WritingApplicationContext
   readonly transform?: PromptTransformInput
   readonly transformId?: string
   readonly transformInstructions?: string

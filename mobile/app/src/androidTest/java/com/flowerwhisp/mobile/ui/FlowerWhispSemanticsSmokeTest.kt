@@ -46,4 +46,25 @@ class FlowerWhispSemanticsSmokeTest {
         composeRule.onNodeWithTag("nav-settings").assertHasClickAction().performClick()
         composeRule.runOnIdle { assertEquals(FlowerWhispDestination.SETTINGS, destination) }
     }
+
+    @Test
+    fun emptyInsightsKeepsTheCompleteStructure() {
+        composeRule.setContent {
+            FlowerWhispApp(
+                uiState = FlowerWhispUiState(
+                    onboardingComplete = true,
+                    destination = FlowerWhispDestination.INSIGHTS,
+                ),
+                actions = FlowerWhispActions(),
+            )
+        }
+
+        composeRule.onNodeWithText("No saved dictations yet").assertIsDisplayed()
+        composeRule.onNodeWithTag("insights-overview").assertExists()
+        composeRule.onNodeWithTag("insights-activity").assertExists()
+        composeRule.onNodeWithTag("insights-time-of-day").assertExists()
+        composeRule.onNodeWithText("Outcomes").assertExists()
+        composeRule.onNodeWithText("Cleanup").assertExists()
+        composeRule.onNodeWithText("Language modes").assertExists()
+    }
 }

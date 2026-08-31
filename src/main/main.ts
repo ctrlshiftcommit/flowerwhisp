@@ -46,6 +46,7 @@ import {
   normalizeShortcutBindings,
   SHORTCUT_ACTION_IDS,
 } from '../shared/shortcuts'
+import { WRITING_PURPOSES } from '../shared/writingContext'
 import { DictationPipeline } from './services/pipeline'
 import {
   captureInsertionTarget,
@@ -57,7 +58,7 @@ import {
 } from './services/insertion'
 import { SecretStore } from './services/secrets'
 import { JsonStateStore, type AppSnapshot } from './services/store'
-import { countWords } from './domain'
+import { countWords, summarizeInsights } from './domain'
 
 const execFileAsync = promisify(execFile)
 
@@ -480,6 +481,11 @@ const buildBootstrap = async (): Promise<BootstrapPayload> => {
     transforms: snapshot.transforms,
     recoveries: snapshot.recoveries.map(({ audioFileName: _audioFileName, ...recovery }) => recovery),
     usage: snapshot.usage,
+    insights: summarizeInsights(snapshot.records, {
+      asOfDate: new Date().toISOString().slice(0, 10),
+      usage: snapshot.usage,
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }),
     scratchpad: snapshot.scratchpad,
     hasGroqKey: await secrets.hasGroqKey(),
     holdShortcutRegistered,
@@ -1922,7 +1928,11 @@ const handleAudio = async (payload: { sessionId: string; dataUrl: string; mimeTy
     recovery = await createRecoveryRecording(payload.sessionId, bytes, payload.mimeType, payload.durationMs)
     advance('transcribing', { message: 'Audio saved. Transcribing with the selected provider…', elapsedMs: Date.now() - activeSession.startedAt })
     const settings = (await getSnapshot()).settings
-    const processed = await pipeline.run({ audio: { bytes, mimeType: payload.mimeType, durationMs: payload.durationMs }, settings })
+    const processed = await pipeline.run({
+      audio: { bytes, mimeType: payload.mimeType, durationMs: payload.durationMs },
+      settings,
+      insertionTarget: activeSession.fallbackInsertionTarget,
+    })
     advance('processing', {
       message: processed.cleanupStatus === 'applied'
         ? 'Text cleanup applied.'
@@ -2067,6 +2077,13 @@ const saveSettings = async (patch: Partial<PublicSettings>): Promise<CommandResu
   if (patch.theme !== undefined && !['light', 'dark', 'system'].includes(patch.theme)) return result(false, undefined, 'Choose light, dark, or system appearance.')
   if (patch.pillPosition !== undefined && !['left', 'center', 'right'].includes(patch.pillPosition)) return result(false, undefined, 'Choose left, center, or right for the Flow Bar.')
   const previous = await getSnapshot()
+  if (patch.styleByCategory !== undefined) {
+    const validSelections = WRITING_PURPOSES.every((category) => {
+      const styleId = patch.styleByCategory?.[category]
+      return typeof styleId === 'string' && previous.styles.some((style) => style.id === styleId && style.category === category)
+    })
+    if (!validSelections) return result(false, undefined, 'Choose a valid writing style for every application category.')
+  }
   const previousShortcuts: DictationShortcutSettings = {
     holdShortcut: previous.settings.holdShortcut,
     toggleShortcut: previous.settings.toggleShortcut,

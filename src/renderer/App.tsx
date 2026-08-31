@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
+import type { CSSProperties, FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import {
   ArrowsClockwise,
   Bell,
@@ -34,6 +34,7 @@ import {
 } from '@phosphor-icons/react'
 import type { Icon as PhosphorIcon } from '@phosphor-icons/react'
 
+import type { InsightSummary } from '../shared/domain'
 import type {
   BootstrapPayload,
   CleanupLevel,
@@ -77,6 +78,12 @@ const emptySettings: PublicSettings = {
   cleanupLevel: 'light',
   cleanupPrompts: { ...DEFAULT_CLEANUP_PROMPTS },
   defaultStyle: 'personal-casual',
+  styleByCategory: {
+    personal: 'personal-casual',
+    work: 'work-clear',
+    email: 'email-formal',
+    other: 'other-formal',
+  },
   holdShortcut: DEFAULT_HOLD_SHORTCUT,
   toggleShortcut: DEFAULT_TOGGLE_SHORTCUT,
   shortcutBindings: Object.fromEntries(Object.entries(DEFAULT_SHORTCUT_BINDINGS).map(([action, bindings]) => [action, [...bindings]])) as PublicSettings['shortcutBindings'],
@@ -108,6 +115,56 @@ const emptyOverlay: OverlayState = {
   copyAvailable: false,
 }
 
+const emptyInsights: InsightSummary = {
+  totalDictations: 0,
+  totalWords: 0,
+  estimatedTokens: 0,
+  totalDurationMs: 0,
+  totalDurationMinutes: 0,
+  averageWpm: 0,
+  averageWordsPerDictation: 0,
+  averageSessionDurationMs: 0,
+  longestSessionMs: 0,
+  activeDays: 0,
+  totalFixes: 0,
+  dictionaryFixes: 0,
+  aiFixes: 0,
+  successfulDictations: 0,
+  errorDictations: 0,
+  cancelledDictations: 0,
+  insertedDictations: 0,
+  clipboardFallbacks: 0,
+  scratchpadSaves: 0,
+  failedInsertions: 0,
+  unattemptedInsertions: 0,
+  cleanupApplied: 0,
+  cleanupUnchanged: 0,
+  cleanupFailed: 0,
+  cleanupDisabled: 0,
+  applicationUsage: [],
+  categoryUsage: [
+    { category: 'personal', dictationCount: 0, wordCount: 0, durationMs: 0, percentage: 0 },
+    { category: 'work', dictationCount: 0, wordCount: 0, durationMs: 0, percentage: 0 },
+    { category: 'email', dictationCount: 0, wordCount: 0, durationMs: 0, percentage: 0 },
+    { category: 'other', dictationCount: 0, wordCount: 0, durationMs: 0, percentage: 0 },
+  ],
+  dayPartUsage: [
+    { part: 'morning', dictationCount: 0, wordCount: 0, durationMs: 0, percentage: 0 },
+    { part: 'afternoon', dictationCount: 0, wordCount: 0, durationMs: 0, percentage: 0 },
+    { part: 'evening', dictationCount: 0, wordCount: 0, durationMs: 0, percentage: 0 },
+    { part: 'night', dictationCount: 0, wordCount: 0, durationMs: 0, percentage: 0 },
+  ],
+  activityByDay: [],
+  recentDays: [],
+  currentPeriod: null,
+  previousPeriod: null,
+  wordTrendPercent: null,
+  bestDay: null,
+  currentStreakDays: 0,
+  longestStreakDays: 0,
+  asOfDate: null,
+}
+
 const emptyBootstrap = (): BootstrapPayload => ({
   settings: { ...emptySettings },
   records: [],
@@ -117,6 +174,7 @@ const emptyBootstrap = (): BootstrapPayload => ({
   transforms: [],
   recoveries: [],
   usage: [],
+  insights: emptyInsights,
   scratchpad: '',
   hasGroqKey: false,
   holdShortcutRegistered: false,
@@ -776,28 +834,58 @@ const CaptureBand = ({ overlay, onStart, onOpenStyle, onStop, onCancel, onCopy, 
   )
 }
 
+const insightDate = (value: string): Date => new Date(`${value}T12:00:00.000Z`)
+
+const shiftInsightDate = (value: string, days: number): string => {
+  const date = insightDate(value)
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10)
+}
+
+const formatInsightDate = (
+  value: string,
+  options: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short' },
+): string => new Intl.DateTimeFormat(undefined, {
+  ...options,
+  timeZone: 'UTC',
+}).format(insightDate(value))
+
+const formatInsightDuration = (milliseconds: number): string => {
+  const seconds = Math.max(0, Math.round(milliseconds / 1_000))
+  if (seconds === 0) return '0m'
+  const hours = Math.floor(seconds / 3_600)
+  const minutes = Math.floor((seconds % 3_600) / 60)
+  const remainder = seconds % 60
+  if (hours > 0) return `${hours}h ${minutes}m`
+  if (minutes > 0) return `${minutes}m ${remainder}s`
+  return `${remainder}s`
+}
+
+const pluralize = (count: number, singular: string, plural = `${singular}s`): string =>
+  `${count.toLocaleString()} ${count === 1 ? singular : plural}`
+
 const SummaryRail = ({ data }: { data: BootstrapPayload }) => {
-  const totalWords = data.usage.reduce((sum, day) => sum + day.words, 0)
-  const totalDuration = data.usage.reduce((sum, day) => sum + day.durationMs, 0)
-  const wpm = totalDuration > 0 ? Math.round(totalWords / (totalDuration / 60_000)) : 0
-  const streak = data.usage.length
+  const { insights } = data
+  const today = insights.asOfDate
+    ? insights.activityByDay.find((day) => day.date === insights.asOfDate)
+    : undefined
   return (
     <div className="summary-rail" aria-label="Usage summary">
       <div className="summary-item summary-item-lead">
-        <span className="summary-value">{totalWords.toLocaleString()}</span>
+        <span className="summary-value">{insights.totalWords.toLocaleString()}</span>
         <span className="summary-label">total words</span>
       </div>
       <div className="summary-item">
-        <span className="summary-value">{wpm || '—'}</span>
+        <span className="summary-value">{insights.averageWpm ? Math.round(insights.averageWpm) : '—'}</span>
         <span className="summary-label">wpm</span>
       </div>
       <div className="summary-item">
-        <span className="summary-value">{streak || '—'}</span>
+        <span className="summary-value">{insights.currentStreakDays || '—'}</span>
         <span className="summary-label">day streak</span>
       </div>
       <div className="summary-note">
         <span className="summary-label">Today</span>
-        <span>{data.usage[0] ? `${data.usage[0].dictations} dictations` : '—'}</span>
+        <span>{today ? pluralize(today.dictationCount, 'dictation') : 'No dictations yet'}</span>
       </div>
     </div>
   )
@@ -870,35 +958,211 @@ const DictationPage = ({ data, overlay, onStart, onOpenStyle, onStop, onCancel, 
   </div>
 )
 
+const insightCategoryLabels = {
+  personal: 'Personal messages',
+  work: 'Work messages',
+  email: 'Email',
+  other: 'Other writing',
+} as const
+
+const insightDayPartLabels = {
+  morning: 'Morning',
+  afternoon: 'Afternoon',
+  evening: 'Evening',
+  night: 'Night',
+} as const
+
 const InsightsPage = ({ data }: { data: BootstrapPayload }) => {
-  const totalWords = data.usage.reduce((sum, day) => sum + day.words, 0)
-  const totalDuration = data.usage.reduce((sum, day) => sum + day.durationMs, 0)
-  const wordsPerMinute = totalDuration > 0 ? Math.round(totalWords / (totalDuration / 60_000)) : 0
-  const correctedWords = data.records.reduce((sum, record) => sum + record.aiFixCount, 0)
-  const dictionaryFixes = data.records.reduce((sum, record) => sum + record.dictionaryFixCount, 0)
-  const appsUsed = new Set(data.records.map((record) => record.application).filter(Boolean)).size
-  const streak = data.usage.length
-  const usageRows = [
-    { icon: Sparkle, percent: 0, label: 'AI PROMPTS', count: 0 },
-    { icon: ClipboardText, percent: 0, label: 'DOCUMENTS', count: 0 },
-    { icon: ArrowsClockwise, percent: 0, label: 'OTHER TASKS', count: 0 },
-    { icon: Quotes, percent: 0, label: 'PERSONAL MESSAGES', count: 0 },
-    { icon: EnvelopeIcon, percent: 0, label: 'EMAILS', count: 0 },
-    { icon: ClipboardText, percent: 0, label: 'WORK MESSAGES', count: 0 },
+  const { insights } = data
+  const knownAppCount = new Set(
+    insights.applicationUsage.map((application) => application.applicationName),
+  ).size
+  const maxRecentWords = Math.max(
+    1,
+    ...insights.recentDays.map((day) => day.wordCount),
+  )
+  const activityByDate = new Map(
+    insights.activityByDay.map((day) => [day.date, day]),
+  )
+  const calendarDays = useMemo(() => {
+    if (!insights.asOfDate) return []
+    const weekday = insightDate(insights.asOfDate).getUTCDay()
+    const firstDate = shiftInsightDate(insights.asOfDate, -(weekday + 77))
+    const maxWords = Math.max(
+      1,
+      ...insights.activityByDay.map((day) => day.wordCount),
+    )
+    return Array.from({ length: 84 }, (_, index) => {
+      const date = shiftInsightDate(firstDate, index)
+      const activity = activityByDate.get(date)
+      const words = activity?.wordCount ?? 0
+      const level = words === 0 ? 0 : Math.min(4, Math.max(1, Math.ceil((words / maxWords) * 4)))
+      return {
+        date,
+        words,
+        dictations: activity?.dictationCount ?? 0,
+        level,
+        future: date > (insights.asOfDate as string),
+      }
+    })
+  }, [insights.activityByDay, insights.asOfDate])
+  const trend = insights.wordTrendPercent
+  const trendLabel = trend === null
+    ? 'No prior 7-day baseline'
+    : `${trend > 0 ? '+' : ''}${Math.round(trend)}% words vs prior 7 days`
+  const trendTone = trend === null || trend === 0
+    ? 'is-neutral'
+    : trend > 0
+      ? 'is-positive'
+      : 'is-negative'
+
+  if (insights.totalDictations === 0) {
+    return (
+      <div className="page page-insights analytics-page">
+        <div className="analytics-scope"><span className="analytics-scope-dot" /><strong>All-time desktop usage</strong><span>Calculated locally</span></div>
+        <section className="analytics-empty">
+          <div className="analytics-empty-mark"><ChartLineUp size={27} /></div>
+          <span className="detail-kicker">Nothing fabricated</span>
+          <h2>Your real patterns will appear here.</h2>
+          <p>Complete your first dictation and FlowerWhisp will calculate words, speaking time, pace, streaks, writing contexts, cleanup outcomes, and delivery results.</p>
+        </section>
+        <p className="analytics-method-note"><ShieldCheck size={16} /> Insights are calculated locally from privacy-safe usage totals and retained session metadata.</p>
+      </div>
+    )
+  }
+
+  const overviewMetrics = [
+    {
+      label: 'Total words',
+      value: insights.totalWords.toLocaleString(),
+      detail: `${pluralize(insights.totalDictations, 'completed dictation')}`,
+    },
+    {
+      label: 'Speaking time',
+      value: formatInsightDuration(insights.totalDurationMs),
+      detail: 'Recorded audio duration',
+    },
+    {
+      label: 'Sessions',
+      value: insights.totalDictations.toLocaleString(),
+      detail: `${Math.round(insights.averageWordsPerDictation).toLocaleString()} words on average`,
+    },
+    {
+      label: 'Est. text tokens',
+      value: insights.estimatedTokens.toLocaleString(),
+      detail: 'Word-derived estimate, not provider billing',
+      title: 'Estimated as four text tokens for every three dictated words. This is not exact Groq API usage.',
+    },
   ]
-  const heatmap = Array.from({ length: 35 }, (_, index) => (index >= 31 && index % 3 === 0 ? 2 : 0))
+  const statMetrics = [
+    { label: 'Speaking pace', value: insights.averageWpm ? `${Math.round(insights.averageWpm)} wpm` : 'Not enough data' },
+    { label: 'Average session', value: formatInsightDuration(insights.averageSessionDurationMs) },
+    { label: 'Longest session', value: formatInsightDuration(insights.longestSessionMs) },
+    { label: 'Active days', value: insights.activeDays.toLocaleString() },
+    { label: 'Flow fixes', value: insights.totalFixes.toLocaleString() },
+    { label: 'Known apps', value: knownAppCount.toLocaleString() },
+  ]
+  const cleanupRows = [
+    { label: 'Changed by cleanup', value: insights.cleanupApplied },
+    { label: 'Checked, unchanged', value: insights.cleanupUnchanged },
+    { label: 'Cleanup unavailable', value: insights.cleanupFailed },
+    { label: 'Cleanup disabled', value: insights.cleanupDisabled },
+  ]
+  const deliveryRows = [
+    { label: 'Inserted at cursor', value: insights.insertedDictations },
+    { label: 'Copied for paste', value: insights.clipboardFallbacks },
+    { label: 'Sent to Scratchpad', value: insights.scratchpadSaves },
+    { label: 'Not delivered', value: insights.failedInsertions + insights.unattemptedInsertions },
+  ]
+
   return (
-    <div className="page page-insights">
-      <div className="insights-tab-row"><span className="insights-tab is-active">Your usage</span></div>
-      <div className="insights-metrics">
-        <section className="metric-card metric-wpm"><strong>{wordsPerMinute || '—'}</strong><span>WORDS PER MINUTE <Info size={17} /></span><div className="gauge"><div className="gauge-arc" /><span>Top<br /><b>0.1%</b></span></div></section>
-        <section className="metric-card metric-fixes"><strong>{(correctedWords + dictionaryFixes).toLocaleString()}</strong><span>FIXES MADE BY FLOW</span><hr /><p>{correctedWords.toLocaleString()} words corrected <Info size={17} /></p><p>{dictionaryFixes.toLocaleString()} dictionary fixes <Info size={17} /></p></section>
-        <section className="metric-card metric-total"><strong>{totalWords.toLocaleString()}</strong><span>TOTAL WORDS DICTATED</span><hr /><p><Desktop size={18} /> Desktop</p><p>{totalWords.toLocaleString()} words</p></section>
+    <div className="page page-insights analytics-page">
+      <div className="analytics-scope">
+        <span className="analytics-scope-dot" />
+        <strong>All-time desktop usage</strong>
+        <span>{pluralize(insights.totalDictations, 'completed dictation')} across {pluralize(insights.activeDays, 'active day')}</span>
       </div>
-      <div className="insights-lower">
-        <section className="usage-card"><div className="insights-card-heading"><h2>Desktop usage</h2><span>TOTAL APPS USED | {appsUsed}</span></div>{usageRows.map(({ icon: Icon, percent, label, count }) => <div className="usage-row" key={label}><Icon size={22} /><span className="usage-bar" style={{ width: `${Math.max(12, percent)}%` }}>{percent}%</span><strong>{count} {label}</strong></div>)}</section>
-        <section className="streak-card"><div className="insights-card-heading"><h2>{streak || 1} day streak</h2><span>LONGEST STREAK | {streak || 1} DAYS</span></div><div className="streak-months"><span>‹</span><span>Apr</span><span>May</span><span>Jun</span><span>Jul</span><span>Aug</span><span>›</span></div><div className="heatmap">{['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, row) => <div className="heatmap-row" key={day}><span>{day}</span>{heatmap.slice(row * 5, row * 5 + 5).map((level, index) => <i className={`heatmap-cell level-${level}`} key={`${day}-${index}`} />)}</div>)}</div><div className="heatmap-legend"><span>More</span><i className="level-3" /><i className="level-2" /><i className="level-1" /><i className="level-0" /><span>Less</span></div></section>
+
+      <section className="analytics-overview" aria-label="Usage totals">
+        {overviewMetrics.map((metric) => <article className="analytics-metric" key={metric.label} title={metric.title}><span>{metric.label}</span><strong>{metric.value}</strong><small>{metric.detail}</small></article>)}
+      </section>
+
+      <section className="analytics-stat-strip" aria-label="Session averages">
+        {statMetrics.map((metric) => <div key={metric.label}><span>{metric.label}</span><strong>{metric.value}</strong></div>)}
+      </section>
+
+      <div className="analytics-primary-grid">
+        <section className="analytics-panel analytics-pulse-panel">
+          <header className="analytics-panel-heading">
+            <div><span className="detail-kicker">Recent rhythm</span><h2>14-day pulse</h2></div>
+            <span className={`analytics-trend ${trendTone}`}>{trendLabel}</span>
+          </header>
+          <div className="analytics-bars" role="img" aria-label="Words dictated on each of the last 14 days">
+            {insights.recentDays.map((day) => {
+              const height = day.wordCount === 0 ? 2 : Math.max(8, Math.round((day.wordCount / maxRecentWords) * 100))
+              const label = `${formatInsightDate(day.date, { weekday: 'long', day: 'numeric', month: 'long' })}: ${pluralize(day.wordCount, 'word')}, ${pluralize(day.dictationCount, 'dictation')}`
+              return <div className={`analytics-bar-column ${day.wordCount > 0 ? 'has-activity' : ''}`} key={day.date} role="img" aria-label={label} title={label}><div className="analytics-bar-track"><i style={{ '--analytics-bar-height': `${height}%` } as CSSProperties} /></div><span>{formatInsightDate(day.date, { day: 'numeric' })}</span><small>{formatInsightDate(day.date, { weekday: 'narrow' })}</small></div>
+            })}
+          </div>
+          <div className="analytics-periods">
+            <div><span>Last 7 days</span><strong>{(insights.currentPeriod?.wordCount ?? 0).toLocaleString()} words</strong><small>{pluralize(insights.currentPeriod?.dictationCount ?? 0, 'session')}</small></div>
+            <div><span>Previous 7 days</span><strong>{(insights.previousPeriod?.wordCount ?? 0).toLocaleString()} words</strong><small>{pluralize(insights.previousPeriod?.dictationCount ?? 0, 'session')}</small></div>
+          </div>
+          <details className="analytics-daily-table">
+            <summary>View exact daily totals</summary>
+            <div className="accessible-table-wrap"><table><thead><tr><th>Date</th><th>Words</th><th>Sessions</th><th>Speaking</th></tr></thead><tbody>{insights.recentDays.map((day) => <tr key={day.date}><td>{formatInsightDate(day.date, { weekday: 'short', day: 'numeric', month: 'short' })}</td><td>{day.wordCount.toLocaleString()}</td><td>{day.dictationCount.toLocaleString()}</td><td>{formatInsightDuration(day.durationMs)}</td></tr>)}</tbody></table></div>
+          </details>
+        </section>
+
+        <section className="analytics-panel analytics-streak-panel">
+          <header className="analytics-panel-heading">
+            <div><span className="detail-kicker">Consistency</span><h2>{pluralize(insights.currentStreakDays, 'day')} streak</h2></div>
+            <div className="analytics-longest"><span>Longest</span><strong>{pluralize(insights.longestStreakDays, 'day')}</strong></div>
+          </header>
+          {calendarDays.length > 0 ? <>
+            <div className="analytics-calendar-range"><span>{formatInsightDate(calendarDays[0].date, { day: 'numeric', month: 'short' })}</span><span>through {formatInsightDate(insights.asOfDate as string, { day: 'numeric', month: 'short' })}</span></div>
+            <div className="analytics-calendar-wrap">
+              <div className="analytics-calendar-weekdays" aria-hidden="true">{['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, index) => <span key={`${day}-${index}`}>{day}</span>)}</div>
+              <div className="analytics-calendar" role="img" aria-label="Twelve-week dictation activity calendar">{calendarDays.map((day) => {
+                const label = `${formatInsightDate(day.date, { weekday: 'long', day: 'numeric', month: 'long' })}: ${pluralize(day.words, 'word')}, ${pluralize(day.dictations, 'dictation')}`
+                return <i className={`analytics-calendar-cell level-${day.level} ${day.future ? 'is-future' : ''}`} key={day.date} title={day.future ? `${formatInsightDate(day.date, { day: 'numeric', month: 'long' })}: future date` : label} aria-label={day.future ? undefined : label} />
+              })}</div>
+            </div>
+            <div className="analytics-calendar-legend"><span>Less</span>{[0, 1, 2, 3, 4].map((level) => <i className={`analytics-calendar-cell level-${level}`} key={level} />)}<span>More</span></div>
+          </> : null}
+          <div className="analytics-best-day"><span>Best day</span>{insights.bestDay ? <><strong>{formatInsightDate(insights.bestDay.date, { weekday: 'long', day: 'numeric', month: 'short' })}</strong><small>{pluralize(insights.bestDay.wordCount, 'word')} · {pluralize(insights.bestDay.dictationCount, 'session')}</small></> : <strong>No activity yet</strong>}</div>
+        </section>
       </div>
+
+      <div className="analytics-secondary-grid">
+        <section className="analytics-panel analytics-context-panel">
+          <header className="analytics-panel-heading"><div><span className="detail-kicker">Desktop usage</span><h2>Writing contexts</h2></div><span>{knownAppCount} known {knownAppCount === 1 ? 'app' : 'apps'}</span></header>
+          <div className="analytics-distribution-list">
+            {insights.categoryUsage.map((category) => <div className="analytics-distribution-row" key={category.category}><div className="analytics-distribution-copy"><span>{insightCategoryLabels[category.category]}</span><small>{pluralize(category.dictationCount, 'session')} · {pluralize(category.wordCount, 'word')}</small></div><div className="analytics-distribution-track"><i style={{ '--analytics-width': `${category.percentage}%` } as CSSProperties} /></div><strong>{Math.round(category.percentage)}%</strong></div>)}
+          </div>
+          <div className="analytics-app-list">
+            <span className="analytics-subheading">Detected apps</span>
+            {insights.applicationUsage.length > 0 ? insights.applicationUsage.slice(0, 4).map((application) => <div key={`${application.applicationName}-${application.applicationCategory ?? ''}`}><span>{application.applicationName}</span><small>{pluralize(application.dictationCount, 'session')} · {pluralize(application.wordCount, 'word')}</small><strong>{Math.round(application.percentage)}%</strong></div>) : <p>App detection has not identified a destination yet. Unverified targets are not counted as apps.</p>}
+          </div>
+        </section>
+
+        <section className="analytics-panel analytics-outcomes-panel">
+          <header className="analytics-panel-heading"><div><span className="detail-kicker">What Flow did</span><h2>Cleanup &amp; delivery</h2></div><span>{pluralize(insights.totalFixes, 'fix')}</span></header>
+          <div className="analytics-outcome-columns">
+            <div><span className="analytics-subheading">Cleanup</span>{cleanupRows.map((row) => <p key={row.label}><span>{row.label}</span><strong>{row.value.toLocaleString()}</strong></p>)}</div>
+            <div><span className="analytics-subheading">Delivery</span>{deliveryRows.map((row) => <p key={row.label}><span>{row.label}</span><strong>{row.value.toLocaleString()}</strong></p>)}</div>
+          </div>
+          <div className="analytics-fix-ledger"><div><span>Word changes</span><strong>{insights.aiFixes.toLocaleString()}</strong></div><div><span>Dictionary fixes</span><strong>{insights.dictionaryFixes.toLocaleString()}</strong></div></div>
+        </section>
+
+        <section className="analytics-panel analytics-rhythm-panel">
+          <header className="analytics-panel-heading"><div><span className="detail-kicker">When you speak</span><h2>Daily rhythm</h2></div><span>Local time</span></header>
+          <div className="analytics-dayparts">{insights.dayPartUsage.map((part) => <div key={part.part}><div><span>{insightDayPartLabels[part.part]}</span><strong>{pluralize(part.dictationCount, 'session')}</strong></div><div className="analytics-distribution-track"><i style={{ '--analytics-width': `${part.percentage}%` } as CSSProperties} /></div><small>{Math.round(part.percentage)}% of retained words</small></div>)}</div>
+          <div className="analytics-rhythm-facts"><div><span>Average words</span><strong>{Math.round(insights.averageWordsPerDictation).toLocaleString()}</strong><small>per completed session</small></div><div><span>Speaking pace</span><strong>{insights.averageWpm ? Math.round(insights.averageWpm).toLocaleString() : '—'}</strong><small>words per minute</small></div></div>
+        </section>
+      </div>
+
+      <p className="analytics-method-note"><ShieldCheck size={16} /> All-time totals use privacy-safe daily aggregates. App, context, cleanup, and delivery breakdowns use retained session metadata. Estimated tokens are a text approximation, not billed provider usage.</p>
     </div>
   )
 }
@@ -994,30 +1258,9 @@ type StyleTabId = 'personal' | 'work' | 'email' | 'other' | 'cleanup'
 
 const StylePage = ({ styles, settings, onRefresh }: { styles: StyleProfile[]; settings: PublicSettings; onRefresh: () => void }) => {
   const [activeTab, setActiveTab] = useState<StyleTabId>('personal')
-  const [selectedId, setSelectedId] = useState(settings.defaultStyle || styles[0]?.id || '')
+  const [selectedStyles, setSelectedStyles] = useState(settings.styleByCategory)
   const [editingCleanup, setEditingCleanup] = useState<CleanupLevel | null>(null)
-  const styleCopies: Record<Exclude<StyleTabId, 'cleanup'>, Array<{ name: string; description: string; example: string }>> = {
-    personal: [
-      { name: 'Formal.', description: 'Caps + Punctuation', example: 'Hey, are you free for lunch tomorrow? Let’s do 12 if that works for you.' },
-      { name: 'Casual', description: 'Caps + Less punctuation', example: 'Hey are you free for lunch tomorrow? Let’s do 12 if that works for you' },
-      { name: 'very casual', description: 'No Caps + Less punctuation', example: 'hey are you free for lunch tomorrow? let’s do 12 if that works for you' },
-    ],
-    work: [
-      { name: 'Formal', description: 'Caps + Punctuation', example: 'Hi team, I’ll share the revised plan by Thursday afternoon.' },
-      { name: 'Casual', description: 'Caps + Less punctuation', example: 'Hey team I’ll share the revised plan by Thursday afternoon' },
-      { name: 'Excited', description: 'More exclamations', example: 'Hi team! I’ll share the revised plan by Thursday afternoon!' },
-    ],
-    email: [
-      { name: 'Formal', description: 'Clear and polished', example: 'Thank you for the update. I will review the proposal and reply by Friday.' },
-      { name: 'Casual', description: 'Warm and conversational', example: 'Thanks for the update! I’ll take a look and get back to you by Friday.' },
-      { name: 'Concise', description: 'Shorter email phrasing', example: 'Thanks — I’ll review this and reply by Friday.' },
-    ],
-    other: [
-      { name: 'Formal', description: 'Caps + Punctuation', example: 'Please review the attached notes and let me know if anything is missing.' },
-      { name: 'Casual', description: 'Caps + Less punctuation', example: 'Please review the attached notes and let me know if anything is missing' },
-      { name: 'very casual', description: 'No Caps + Less punctuation', example: 'please review the attached notes and let me know if anything is missing' },
-    ],
-  }
+  useEffect(() => setSelectedStyles(settings.styleByCategory), [settings.styleByCategory])
   const tabCopy: Record<StyleTabId, { label: string; title: string; description: string; apps: string[] }> = {
     personal: { label: 'Personal messages', title: 'This style applies in personal messengers', description: 'Style formatting only applies in English. More languages coming soon.', apps: ['WhatsApp', 'iMessage', 'Telegram', 'Signal', '+'] },
     work: { label: 'Work messages', title: 'This style applies in workplace messengers', description: 'Style formatting only applies in English. More languages coming soon.', apps: ['Slack', 'Teams', 'LinkedIn', '+'] },
@@ -1034,10 +1277,13 @@ const StylePage = ({ styles, settings, onRefresh }: { styles: StyleProfile[]; se
   const availableStyles = activeTab === 'cleanup' ? [] : styles.filter((style) => style.category === activeTab)
   const cards = activeTab === 'cleanup'
     ? cleanupCards
-    : styleCopies[activeTab].map((copy, index) => ({ ...copy, id: availableStyles[index]?.id ?? styles[index]?.id ?? `${activeTab}-${index}` }))
+    : availableStyles
+  const selectedId = activeTab === 'cleanup' ? '' : selectedStyles[activeTab]
   const chooseStyle = (id: string) => {
-    setSelectedId(id)
-    if (styles.some((style) => style.id === id)) void api.settings.save({ defaultStyle: id }).then(onRefresh)
+    if (activeTab === 'cleanup' || !styles.some((style) => style.id === id && style.category === activeTab)) return
+    const styleByCategory = { ...selectedStyles, [activeTab]: id }
+    setSelectedStyles(styleByCategory)
+    void api.settings.save({ defaultStyle: id, styleByCategory }).then(onRefresh)
   }
   const chooseCleanup = (level: CleanupLevel) => void api.settings.save({ cleanupLevel: level, llmProvider: level === 'none' ? 'none' : 'groq' }).then(onRefresh)
   const saveCleanupPrompt = async (value: string): Promise<CommandResult> => {

@@ -33,7 +33,6 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -106,10 +105,10 @@ fun FlowerWhispBubble(
     ) { current ->
         Box(
             modifier = Modifier
-                .defaultMinSize(minWidth = 64.dp, minHeight = 56.dp)
+                .defaultMinSize(minWidth = 52.dp, minHeight = 52.dp)
                 .whispSurface(
                     color = SurfaceElevated,
-                    shape = RoundedCornerShape(22.dp),
+                    shape = RoundedCornerShape(18.dp),
                     borderColor = if (current is BubbleState.Recording) Clay.copy(alpha = 0.72f) else Outline,
                 )
                 .semantics { contentDescription = bubbleDescription(current, elapsedSeconds) },
@@ -117,7 +116,7 @@ fun FlowerWhispBubble(
             when (current) {
                 BubbleState.Hidden -> Unit
                 BubbleState.Ready -> ReadyBubble(withFeedback(onStart), reduceMotion)
-                is BubbleState.Recording -> RecordingBubble(current.level, elapsedSeconds, withFeedback(onFinish), withFeedback(onCancel))
+                is BubbleState.Recording -> RecordingBubble(current.level, withFeedback(onFinish), withFeedback(onCancel))
                 is BubbleState.Processing -> ProcessingBubble(current.stage, withFeedback(onCancel), reduceMotion)
                 is BubbleState.Success -> SuccessBubble(current.inserted, withFeedback(onOpenApp))
                 is BubbleState.InsertionFallback -> FallbackBubble(current.text, copyWithFeedback, withFeedback(onOpenApp))
@@ -153,8 +152,8 @@ private fun ReadyBubble(onStart: () -> Unit, reduceMotion: Boolean) {
     val pressed by interactionSource.collectIsPressedAsState()
     Box(
         modifier = Modifier
-            .size(width = 64.dp, height = 56.dp)
-            .clip(RoundedCornerShape(22.dp))
+            .size(52.dp)
+            .clip(RoundedCornerShape(18.dp))
             .background(if (pressed) Clay.copy(alpha = 0.14f) else Color.Transparent)
             .clickable(
                 interactionSource = interactionSource,
@@ -173,16 +172,15 @@ private fun ReadyBubble(onStart: () -> Unit, reduceMotion: Boolean) {
 }
 
 @Composable
-private fun RecordingBubble(level: Float, elapsedSeconds: Long, onFinish: () -> Unit, onCancel: () -> Unit) {
+private fun RecordingBubble(level: Float, onFinish: () -> Unit, onCancel: () -> Unit) {
     Row(
-        modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        LevelBars(level)
-        Text(formatElapsed(elapsedSeconds), style = MaterialTheme.typography.labelLarge, color = PrimaryText)
-        BubbleIconButton(Icons.Outlined.Stop, "Finish dictation", Clay, onFinish)
         BubbleIconButton(Icons.Outlined.Cancel, "Cancel dictation", SecondaryText, onCancel)
+        LevelBars(level)
+        BubbleIconButton(Icons.Outlined.Check, "Finish dictation", Clay, onFinish)
     }
 }
 
@@ -191,18 +189,18 @@ private fun LevelBars(level: Float) {
     val normalized = level.coerceIn(0f, 1f)
     Row(
         modifier = Modifier
-            .width(48.dp)
-            .height(34.dp)
+            .width(38.dp)
+            .height(30.dp)
             .semantics { contentDescription = "Microphone level ${(normalized * 100).roundToInt()} percent" },
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         listOf(0.42f, 0.68f, 1f, 0.68f, 0.42f).forEachIndexed { index, scale ->
-            val target = (6f + normalized * 24f * scale).dp
+            val target = (5f + normalized * 21f * scale).dp
             val height by animateFloatAsState(target.value, tween(120), label = "level-$index")
             Box(
                 Modifier
-                    .width(5.dp)
+                    .width(4.dp)
                     .height(height.dp)
                     .clip(RoundedCornerShape(4.dp))
                     .background(if (index == 2) Clay else PrimaryText.copy(alpha = 0.78f)),
@@ -275,8 +273,8 @@ private fun FallbackBubble(text: String, onCopy: (String) -> Unit, onOpenApp: ()
         Text("Copy the text, then paste it in the focused field.", color = SecondaryText, style = MaterialTheme.typography.bodyMedium)
         Text(text, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            CompactAction("Copy", Icons.Outlined.ContentCopy, onClick = { onCopy(text) })
-            CompactAction("Open app", Icons.AutoMirrored.Outlined.Launch, onClick = onOpenApp)
+            CompactAction("Copy", icon = Icons.Outlined.ContentCopy, onClick = { onCopy(text) })
+            CompactAction("Open app", icon = Icons.AutoMirrored.Outlined.Launch, onClick = onOpenApp)
         }
     }
 }
@@ -293,8 +291,8 @@ private fun ErrorBubble(title: String, message: String, onRetry: () -> Unit, onO
         }
         Text(message, color = SecondaryText, style = MaterialTheme.typography.bodyMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            CompactAction("Retry", Icons.Outlined.Refresh, onClick = onRetry)
-            CompactAction("Open app", Icons.AutoMirrored.Outlined.Launch, onClick = onOpenApp)
+            CompactAction("Retry", icon = Icons.Outlined.Refresh, onClick = onRetry)
+            CompactAction("Open app", icon = Icons.AutoMirrored.Outlined.Launch, onClick = onOpenApp)
         }
     }
 }

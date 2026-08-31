@@ -135,7 +135,6 @@ import com.flowerwhisp.mobile.domain.model.WritingStyle
 import com.flowerwhisp.mobile.domain.model.cleanupPrompt
 import com.flowerwhisp.mobile.domain.model.styleFor
 import com.flowerwhisp.mobile.domain.model.styleInstructionsFor
-import com.flowerwhisp.mobile.domain.insights.InsightSnapshot
 import com.flowerwhisp.mobile.domain.insights.calculateInsights
 import com.flowerwhisp.mobile.R
 import com.flowerwhisp.mobile.ui.bubble.FlowerWhispBubble
@@ -155,6 +154,7 @@ import com.flowerwhisp.mobile.ui.components.SwitchRow
 import com.flowerwhisp.mobile.ui.components.ValueRow
 import com.flowerwhisp.mobile.ui.components.WhispDialog
 import com.flowerwhisp.mobile.ui.components.whispSurface
+import com.flowerwhisp.mobile.ui.insights.InsightsContent
 import com.flowerwhisp.mobile.ui.theme.Error
 import com.flowerwhisp.mobile.ui.theme.Clay
 import com.flowerwhisp.mobile.ui.theme.FlowerWhispTheme
@@ -463,14 +463,15 @@ private fun OnboardingScreen(uiState: FlowerWhispUiState, actions: FlowerWhispAc
         val horizontal = if (maxWidth > 700.dp) 64.dp else 24.dp
         Column(
             modifier = Modifier
-                .align(Alignment.Center)
-                .widthIn(max = 560.dp)
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = horizontal, vertical = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
+                .align(Alignment.TopCenter)
+                .widthIn(max = 600.dp)
+                .fillMaxSize()
+                .padding(horizontal = horizontal),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.padding(top = 18.dp, bottom = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Image(
                     painter = painterResource(R.drawable.flowerwhisp_logo),
                     contentDescription = "FlowerWhisp",
@@ -480,47 +481,57 @@ private fun OnboardingScreen(uiState: FlowerWhispUiState, actions: FlowerWhispAc
                 Text("FlowerWhisp", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 9.dp).weight(1f))
             }
             OnboardingProgress(step)
-            AnimatedContent(
-                targetState = step,
-                transitionSpec = {
-                    if (uiState.settings.reduceMotion) {
-                        EnterTransition.None togetherWith ExitTransition.None
-                    } else {
-                        (fadeIn(tween(220)) togetherWith fadeOut(tween(140))).using(SizeTransform(clip = false))
-                    }
-                },
-                label = "onboarding-step",
-            ) { current ->
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    val currentDetails = onboardingDetails(current)
-                    Text(currentDetails.title, style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
-                    currentDetails.body?.let { body ->
-                        Text(body, style = MaterialTheme.typography.bodyLarge, color = SecondaryText)
-                    }
-                    when (current) {
-                        OnboardingStep.ACCESS -> AccessChecklist(uiState, actions)
-                        OnboardingStep.MICROPHONE -> MicrophonePermissionCard(uiState, actions)
-                        OnboardingStep.PROVIDER -> ProviderSetup(
-                            apiKey = providerKey,
-                            onApiKeyChange = { providerKey = it },
-                            configured = uiState.groqApiKeyConfigured,
-                        )
-                        OnboardingStep.TEST -> TestPreview(uiState, actions)
-                        OnboardingStep.READY -> ReadyChecklist(uiState)
-                        OnboardingStep.WELCOME -> Unit
-                    }
-                    uiState.serviceMessage?.takeIf(String::isNotBlank)?.let { message ->
-                        Text(message, style = MaterialTheme.typography.bodyMedium, color = if (message.contains("saved", ignoreCase = true)) Clay else SecondaryText)
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(top = 22.dp, bottom = 16.dp),
+            ) {
+                AnimatedContent(
+                    targetState = step,
+                    transitionSpec = {
+                        if (uiState.settings.reduceMotion) {
+                            EnterTransition.None togetherWith ExitTransition.None
+                        } else {
+                            (fadeIn(tween(220)) togetherWith fadeOut(tween(140))).using(SizeTransform(clip = false))
+                        }
+                    },
+                    label = "onboarding-step",
+                ) { current ->
+                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        val currentDetails = onboardingDetails(current)
+                        Text(currentDetails.title, style = MaterialTheme.typography.displaySmall, modifier = Modifier.semantics { heading() })
+                        currentDetails.body?.let { body ->
+                            Text(body, style = MaterialTheme.typography.bodyLarge, color = SecondaryText)
+                        }
+                        when (current) {
+                            OnboardingStep.ACCESS -> AccessChecklist(uiState, actions)
+                            OnboardingStep.MICROPHONE -> MicrophonePermissionCard(uiState, actions)
+                            OnboardingStep.PROVIDER -> ProviderSetup(
+                                apiKey = providerKey,
+                                onApiKeyChange = { providerKey = it },
+                                configured = uiState.groqApiKeyConfigured,
+                            )
+                            OnboardingStep.TEST -> TestPreview(uiState, actions)
+                            OnboardingStep.READY -> ReadyChecklist(uiState)
+                            OnboardingStep.WELCOME -> Unit
+                        }
+                        uiState.serviceMessage?.takeIf(String::isNotBlank)?.let { message ->
+                            Text(message, style = MaterialTheme.typography.bodyMedium, color = if (message.contains("saved", ignoreCase = true)) Clay else SecondaryText)
+                        }
                     }
                 }
             }
-            OnboardingAction(
-                step = step,
-                uiState = uiState,
-                providerKey = providerKey,
-                actions = actions,
-                onProviderKeyConsumed = { providerKey = "" },
-            )
+            Box(Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
+                OnboardingAction(
+                    step = step,
+                    uiState = uiState,
+                    providerKey = providerKey,
+                    actions = actions,
+                    onProviderKeyConsumed = { providerKey = "" },
+                )
+            }
         }
     }
 }
@@ -965,63 +976,8 @@ private fun InsightsScreen(uiState: FlowerWhispUiState, onOpenDrawer: (() -> Uni
     val snapshot = remember(uiState.history) { calculateInsights(uiState.history) }
     ScreenColumn("insights-screen") {
         DestinationHeader("Insights", onOpenDrawer)
-        if (!snapshot.hasData) {
-            StatusPanel(Icons.Outlined.GraphicEq, "No data", tint = Clay)
-        } else {
-            InsightMetricGrid(snapshot)
-            SectionTitle("Last seven days")
-            ActivityBars(snapshot)
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Language", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-                Text(snapshot.mostUsedLanguage?.displayName ?: "—", style = MaterialTheme.typography.bodyLarge, color = SecondaryText)
-            }
-        }
+        InsightsContent(snapshot, loading = uiState.historyLoading, error = uiState.historyError)
     }
-}
-
-@Composable
-private fun InsightMetricGrid(snapshot: InsightSnapshot) {
-    Column {
-        InsightMetric("Sessions", snapshot.totalSessions.toString())
-        RowDivider()
-        InsightMetric("Words", snapshot.totalWords.toString())
-        RowDivider()
-        InsightMetric("Speaking time", formatSpeakingTime(snapshot.speakingTimeMs))
-        RowDivider()
-        InsightMetric("Average words", snapshot.averageWordsPerSession.toString())
-    }
-}
-
-@Composable
-private fun InsightMetric(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
-        Text(value, style = MaterialTheme.typography.titleLarge, color = PrimaryText)
-    }
-}
-
-@Composable
-private fun ActivityBars(snapshot: InsightSnapshot) {
-    val maxWords = snapshot.recentDays.maxOfOrNull { it.words }?.coerceAtLeast(1) ?: 1
-    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Bottom) {
-        snapshot.recentDays.forEach { day ->
-            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Box(Modifier.fillMaxWidth().height((16f + 86f * day.words / maxWords).dp).background(if (day.words > 0) Clay else SurfaceSelected, RoundedCornerShape(7.dp)))
-                Text(day.date.dayOfWeek.name.take(1), style = MaterialTheme.typography.labelMedium, color = MutedText)
-            }
-        }
-    }
-}
-
-private fun formatSpeakingTime(durationMs: Long): String {
-    val seconds = durationMs.coerceAtLeast(0L) / 1_000L
-    return if (seconds < 60) "${seconds}s" else "${seconds / 60}m ${seconds % 60}s"
 }
 
 @Composable
@@ -1604,7 +1560,7 @@ private fun TransformsScreen(
     ScreenColumn("transforms-screen") {
         DestinationHeader("Transforms", onOpenDrawer)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            CompactAction("New transform", Icons.Outlined.Add, onClick = { adding = true })
+            CompactAction("New transform", icon = Icons.Outlined.Add, onClick = { adding = true })
         }
         if (uiState.transforms.isEmpty()) StatusPanel(Icons.Outlined.Refresh, "No transforms")
         uiState.transforms.forEach { transform ->
@@ -1803,12 +1759,12 @@ private fun SettingsScreen(
             supportingText = "Stored with Android Keystore",
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            CompactAction("Save key", Icons.Outlined.Lock, enabled = apiKey.trim().length >= 10) {
+            CompactAction("Save key", icon = Icons.Outlined.Lock, enabled = apiKey.trim().length >= 10) {
                 actions.onSaveApiKey(apiKey.trim())
                 apiKey = ""
             }
             if (uiState.groqApiKeyConfigured) {
-                CompactAction("Remove", Icons.Outlined.DeleteOutline, accent = false, onClick = { confirmRemoveKey = true })
+                CompactAction("Remove", icon = Icons.Outlined.DeleteOutline, accent = false, onClick = { confirmRemoveKey = true })
             }
         }
         ValueRow("Transcription model", uiState.settings.groqTranscriptionModel) { panel = SettingsPanel.TRANSCRIPTION_MODEL }

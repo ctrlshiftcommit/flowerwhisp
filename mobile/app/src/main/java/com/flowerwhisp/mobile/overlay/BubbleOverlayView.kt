@@ -6,7 +6,6 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
-import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -16,7 +15,6 @@ import com.flowerwhisp.mobile.R
 import com.flowerwhisp.mobile.domain.model.BubbleState
 import com.flowerwhisp.mobile.domain.model.ProcessingStage
 import kotlin.math.abs
-import kotlin.math.max
 import kotlin.math.min
 
 @SuppressLint("ViewConstructor")
@@ -27,6 +25,7 @@ internal class BubbleOverlayView(
     private val onExplicitTap: () -> Unit,
     private val onPushToTalkStart: () -> Unit,
     private val onPushToTalkFinish: () -> Unit,
+    private val onCancel: () -> Unit,
 ) : View(context) {
     private val density = resources.displayMetrics.density
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -46,7 +45,6 @@ internal class BubbleOverlayView(
     }
     private val bubbleRect = RectF()
     private val readyMark = RectF()
-    private val stopMark = RectF()
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private var downRawX = 0f
     private var downRawY = 0f
@@ -54,6 +52,7 @@ internal class BubbleOverlayView(
     private var lastRawY = 0f
     private var moved = false
     private var longPressActive = false
+    private var tapX = 0f
     private val longPressAction = Runnable {
         if (!moved && bubbleState == BubbleState.Ready) {
             longPressActive = true
@@ -104,7 +103,7 @@ internal class BubbleOverlayView(
 
     fun desiredWidthPx(): Int = (desiredWidthDp(bubbleState) * density).toInt()
 
-    fun desiredHeightPx(): Int = (56f * density).toInt()
+    fun desiredHeightPx(): Int = (52f * density).toInt()
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
@@ -115,11 +114,16 @@ internal class BubbleOverlayView(
                 lastRawY = event.rawY
                 moved = false
                 longPressActive = false
-                postDelayed(longPressAction, ViewConfiguration.getLongPressTimeout().toLong())
+                tapX = event.x
+                if (bubbleState == BubbleState.Ready) {
+                    postDelayed(longPressAction, ViewConfiguration.getLongPressTimeout().toLong())
+                }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                if (abs(event.rawX - downRawX) > touchSlop || abs(event.rawY - downRawY) > touchSlop) {
+                if (!longPressActive &&
+                    (abs(event.rawX - downRawX) > touchSlop || abs(event.rawY - downRawY) > touchSlop)
+                ) {
                     moved = true
                     removeCallbacks(longPressAction)
                 }
@@ -127,7 +131,7 @@ internal class BubbleOverlayView(
                 val dy = (event.rawY - lastRawY).toInt()
                 lastRawX = event.rawX
                 lastRawY = event.rawY
-                if (moved && (dx != 0 || dy != 0)) onDrag(dx, dy)
+                if (!longPressActive && moved && (dx != 0 || dy != 0)) onDrag(dx, dy)
                 return true
             }
             MotionEvent.ACTION_UP -> {
@@ -138,6 +142,7 @@ internal class BubbleOverlayView(
                 } else if (moved) {
                     onDragFinished()
                 } else {
+                    tapX = event.x
                     performClick()
                 }
                 return true
@@ -156,7 +161,12 @@ internal class BubbleOverlayView(
     override fun performClick(): Boolean {
         super.performClick()
         if (hapticsEnabled) performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-        onExplicitTap()
+        val horizontalFraction = if (width > 0) tapX / width.toFloat() else 0.5f
+        when (bubbleTapAction(bubbleState, horizontalFraction)) {
+            BubbleTapAction.TOGGLE, BubbleTapAction.STATE_ACTION -> onExplicitTap()
+            BubbleTapAction.CANCEL -> onCancel()
+            BubbleTapAction.NONE -> Unit
+        }
         return true
     }
 
@@ -206,33 +216,26 @@ internal class BubbleOverlayView(
     private fun drawRecording(canvas: Canvas, state: BubbleState.Recording) {
         val centerY = height / 2f
         val level = state.level.coerceIn(0f, 1f)
+        drawCross(canvas, 25f * density, centerY, secondaryColor)
         line.color = accentColor
         line.alpha = (255 * bubbleOpacity).toInt()
         val heights = floatArrayOf(0.34f, 0.62f + level * 0.32f, 0.9f, 0.62f + level * 0.32f, 0.34f)
         heights.forEachIndexed { index, scale ->
-            val x = 20f * density + index * 7f * density
+            val x = 61f * density + index * 7f * density
             val half = (5f + 20f * scale) * density / 2f
             canvas.drawLine(x, centerY - half, x, centerY + half, line)
         }
-        text.color = primaryColor
-        text.alpha = (255 * bubbleOpacity).toInt()
-        canvas.drawText(formatElapsed((SystemClock.elapsedRealtime() - state.startedAtElapsedMs).coerceAtLeast(0L) / 1_000L), 67f * density, centerY + 4f * density, text)
-        line.color = primaryColor
-        stopMark.set(width - 41f * density, centerY - 7f * density, width - 27f * density, centerY + 7f * density)
-        canvas.drawRoundRect(stopMark, 3f * density, 3f * density, line)
-        canvas.drawLine(width - 18f * density, centerY - 7f * density, width - 7f * density, centerY + 7f * density, line)
-        canvas.drawLine(width - 7f * density, centerY - 7f * density, width - 18f * density, centerY + 7f * density, line)
+        drawCheck(canvas, width - 25f * density, centerY, primaryColor)
     }
 
     private fun drawProcessing(canvas: Canvas, stage: ProcessingStage) {
         val centerY = height / 2f
         text.color = primaryColor
         text.alpha = (255 * bubbleOpacity).toInt()
-        canvas.drawText(stageLabel(stage), 22f * density, centerY + 4f * density, text)
+        canvas.drawText(stageLabel(stage), 16f * density, centerY + 4f * density, text)
         line.color = accentColor
         line.alpha = (255 * bubbleOpacity).toInt()
-        val x = width - 22f * density
-        canvas.drawCircle(x, centerY, 3f * density, line)
+        drawCross(canvas, width - 24f * density, centerY, secondaryColor)
     }
 
     private fun drawSuccess(canvas: Canvas, inserted: Boolean) {
@@ -253,11 +256,26 @@ internal class BubbleOverlayView(
         canvas.drawText(label, 18f * density, centerY + 4f * density, text)
     }
 
+    private fun drawCross(canvas: Canvas, centerX: Float, centerY: Float, color: Int) {
+        line.color = color
+        line.alpha = (255 * bubbleOpacity).toInt()
+        val radius = 7f * density
+        canvas.drawLine(centerX - radius, centerY - radius, centerX + radius, centerY + radius, line)
+        canvas.drawLine(centerX + radius, centerY - radius, centerX - radius, centerY + radius, line)
+    }
+
+    private fun drawCheck(canvas: Canvas, centerX: Float, centerY: Float, color: Int) {
+        line.color = color
+        line.alpha = (255 * bubbleOpacity).toInt()
+        canvas.drawLine(centerX - 9f * density, centerY, centerX - 2f * density, centerY + 7f * density, line)
+        canvas.drawLine(centerX - 2f * density, centerY + 7f * density, centerX + 10f * density, centerY - 8f * density, line)
+    }
+
     private fun descriptionFor(state: BubbleState): String = when (state) {
         BubbleState.Hidden -> "FlowerWhisp unavailable"
-        BubbleState.Ready -> "Start FlowerWhisp recording"
-        is BubbleState.Recording -> "Stop FlowerWhisp recording"
-        is BubbleState.Processing -> "FlowerWhisp is processing"
+        BubbleState.Ready -> "FlowerWhisp ready. Tap to record or hold for push to talk"
+        is BubbleState.Recording -> "Recording. Tap the cross to cancel or the visualizer and check to finish"
+        is BubbleState.Processing -> "FlowerWhisp is processing. Tap the cross to cancel"
         is BubbleState.Success -> "FlowerWhisp inserted the dictation"
         is BubbleState.InsertionFallback -> "FlowerWhisp copied the dictation for manual paste"
         is BubbleState.AccessibilityError -> "FlowerWhisp insertion error"
@@ -267,12 +285,13 @@ internal class BubbleOverlayView(
     }
 
     private fun desiredWidthDp(state: BubbleState): Float = when (state) {
-        BubbleState.Hidden -> 56f
-        BubbleState.Ready -> if (idleExpanded) 132f else 56f
-        is BubbleState.Recording -> 224f
-        is BubbleState.Processing, is BubbleState.Success -> 168f
-        is BubbleState.InsertionFallback, is BubbleState.AccessibilityError, is BubbleState.ServiceError -> 300f
-        BubbleState.Reconnecting, is BubbleState.Snoozed -> 170f
+        BubbleState.Hidden -> 52f
+        BubbleState.Ready -> if (idleExpanded) 112f else 52f
+        is BubbleState.Recording -> 156f
+        is BubbleState.Processing -> 148f
+        is BubbleState.Success -> 128f
+        is BubbleState.InsertionFallback, is BubbleState.AccessibilityError, is BubbleState.ServiceError -> 236f
+        BubbleState.Reconnecting, is BubbleState.Snoozed -> 148f
     }
 
     private fun stageLabel(stage: ProcessingStage): String = when (stage) {
@@ -290,5 +309,3 @@ internal class BubbleOverlayView(
     private val warningColor: Int get() = if (darkTheme) 0xFFFFB454.toInt() else 0xFF8A4B08.toInt()
     private val errorColor: Int get() = if (darkTheme) 0xFFFF7A70.toInt() else 0xFFB42318.toInt()
 }
-
-private fun formatElapsed(seconds: Long): String = "%d:%02d".format(seconds / 60, seconds % 60)

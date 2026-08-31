@@ -5,6 +5,9 @@ import {
 import type {
   ActivityDayInsight,
   ApplicationInsight,
+  CategoryInsight,
+  DayPart,
+  DayPartInsight,
   DictionaryApplicationResult,
   DictionaryEntry,
   DictionaryInput,
@@ -13,8 +16,10 @@ import type {
   HistoryRecord,
   InsightSummary,
   InsightsOptions,
+  PeriodInsight,
   RejectedStateTransition,
   StateTransitionResult,
+  WritingInsightCategory,
 } from '../shared/domain'
 
 export class InvalidStateTransitionError extends Error {
@@ -275,7 +280,14 @@ function transcriptForAnalytics(record: HistoryRecord): string {
   return typeof record.rawText === 'string' ? record.rawText : ''
 }
 
-function toUtcDate(createdAt: string): string | null {
+function recordWordCount(record: HistoryRecord): number {
+  const transcriptCount = countWords(transcriptForAnalytics(record))
+  return transcriptCount > 0
+    ? transcriptCount
+    : nonNegativeInteger(record.wordCount)
+}
+
+function toCalendarDate(createdAt: string): string | null {
   if (typeof createdAt !== 'string' || createdAt.length === 0) {
     return null
   }
@@ -288,7 +300,7 @@ function toUtcDate(createdAt: string): string | null {
   return date.toISOString().slice(0, 10)
 }
 
-function isValidUtcDate(value: string | undefined): value is string {
+function isValidCalendarDate(value: string | undefined): value is string {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return false
   }
@@ -299,10 +311,105 @@ function isValidUtcDate(value: string | undefined): value is string {
   )
 }
 
-function shiftUtcDate(value: string, days: number): string {
+function shiftCalendarDate(value: string, days: number): string {
   const date = new Date(`${value}T00:00:00.000Z`)
   date.setUTCDate(date.getUTCDate() + days)
   return date.toISOString().slice(0, 10)
+}
+
+const insightCategories: readonly WritingInsightCategory[] = [
+  'personal',
+  'work',
+  'email',
+  'other',
+]
+
+const insightDayParts: readonly DayPart[] = [
+  'morning',
+  'afternoon',
+  'evening',
+  'night',
+]
+
+interface MutableActivityDay {
+  date: string
+  dictationCount: number
+  wordCount: number
+  durationMs: number
+}
+
+function normalizeInsightCategory(value: string | undefined): WritingInsightCategory {
+  const normalized = value?.trim().toLowerCase() ?? ''
+  if (normalized.includes('personal')) return 'personal'
+  if (normalized.includes('work')) return 'work'
+  if (normalized.includes('email')) return 'email'
+  return 'other'
+}
+
+function isKnownApplication(value: string): boolean {
+  const normalized = value.trim().toLowerCase()
+  return Boolean(normalized) &&
+    normalized !== 'unknown application' &&
+    normalized !== 'target not verified'
+}
+
+function hourInTimeZone(createdAt: string, timeZone: string): number | null {
+  const date = new Date(createdAt)
+  if (Number.isNaN(date.getTime())) return null
+
+  try {
+    const hour = new Intl.DateTimeFormat('en-US', {
+      hour: 'numeric',
+      hourCycle: 'h23',
+      timeZone,
+    }).formatToParts(date).find((part) => part.type === 'hour')?.value
+    const parsed = Number(hour)
+    return Number.isFinite(parsed) ? parsed : null
+  } catch {
+    return date.getUTCHours()
+  }
+}
+
+function dayPartForHour(hour: number): DayPart {
+  if (hour >= 5 && hour < 12) return 'morning'
+  if (hour >= 12 && hour < 17) return 'afternoon'
+  if (hour >= 17 && hour < 21) return 'evening'
+  return 'night'
+}
+
+function insightPercentage(
+  wordCount: number,
+  dictationCount: number,
+  totalWords: number,
+  totalDictations: number,
+): number {
+  const numerator = totalWords > 0 ? wordCount : dictationCount
+  const denominator = totalWords > 0 ? totalWords : totalDictations
+  return denominator > 0
+    ? roundToTwoDecimalPlaces((numerator / denominator) * 100)
+    : 0
+}
+
+function periodInsight(
+  activityMap: ReadonlyMap<string, ActivityDayInsight>,
+  endDate: string,
+  daysBeforeEnd: number,
+): PeriodInsight {
+  const periodEnd = shiftCalendarDate(endDate, -daysBeforeEnd)
+  const startDate = shiftCalendarDate(periodEnd, -6)
+  let dictationCount = 0
+  let wordCount = 0
+  let durationMs = 0
+
+  for (let offset = 0; offset < 7; offset += 1) {
+    const activity = activityMap.get(shiftCalendarDate(startDate, offset))
+    if (!activity) continue
+    dictationCount += activity.dictationCount
+    wordCount += activity.wordCount
+    durationMs += activity.durationMs
+  }
+
+  return { startDate, endDate: periodEnd, dictationCount, wordCount, durationMs }
 }
 
 function applicationKey(
@@ -320,13 +427,24 @@ export function summarizeInsights(
     throw new TypeError('Insight records must be an array.')
   }
 
-  let totalWords = 0
-  let totalDurationMs = 0
   let dictionaryFixes = 0
   let aiFixes = 0
-  let successfulDictations = 0
+  let retainedSuccessfulDictations = 0
   let errorDictations = 0
   let cancelledDictations = 0
+  let retainedWords = 0
+  let retainedDurationMs = 0
+  let longestSessionMs = 0
+  let insertedDictations = 0
+  let clipboardFallbacks = 0
+  let scratchpadSaves = 0
+  let failedInsertions = 0
+  let unattemptedInsertions = 0
+  let cleanupApplied = 0
+  let cleanupUnchanged = 0
+  let cleanupFailed = 0
+  let cleanupDisabled = 0
+  const timeZone = options.timeZone ?? 'UTC'
 
   const applicationMap = new Map<
     string,
@@ -335,36 +453,61 @@ export function summarizeInsights(
       applicationCategory?: string
       dictationCount: number
       wordCount: number
+      durationMs: number
     }
   >()
-  const activityMap = new Map<
-    string,
-    { dictationCount: number; wordCount: number; durationMs: number }
-  >()
-  const activityDates = new Set<string>()
+  const categoryMap = new Map<WritingInsightCategory, {
+    dictationCount: number
+    wordCount: number
+    durationMs: number
+  }>()
+  const dayPartMap = new Map<DayPart, {
+    dictationCount: number
+    wordCount: number
+    durationMs: number
+  }>()
+  const recordActivityMap = new Map<string, MutableActivityDay>()
 
   for (const record of records) {
-    const wordCount = countWords(transcriptForAnalytics(record))
+    const wordCount = recordWordCount(record)
     const durationMs = nonNegativeNumber(record.durationMs)
-    const dictionaryFixCount = nonNegativeInteger(record.dictionaryFixCount)
-    const aiFixCount = nonNegativeInteger(record.aiFixCount)
-
-    totalWords += wordCount
-    totalDurationMs += durationMs
-    dictionaryFixes += dictionaryFixCount
-    aiFixes += aiFixCount
 
     switch (record.status) {
       case 'error':
         errorDictations += 1
-        break
+        continue
       case 'cancelled':
         cancelledDictations += 1
-        break
+        continue
       case 'success':
       default:
-        successfulDictations += 1
+        retainedSuccessfulDictations += 1
         break
+    }
+
+    retainedWords += wordCount
+    retainedDurationMs += durationMs
+    longestSessionMs = Math.max(longestSessionMs, durationMs)
+    dictionaryFixes += nonNegativeInteger(record.dictionaryFixCount)
+    aiFixes += nonNegativeInteger(record.aiFixCount)
+
+    switch (record.insertionOutcome) {
+      case 'inserted': insertedDictations += 1; break
+      case 'copied': clipboardFallbacks += 1; break
+      case 'scratchpad': scratchpadSaves += 1; break
+      case 'failed': failedInsertions += 1; break
+      case 'not-attempted': unattemptedInsertions += 1; break
+    }
+
+    const cleanupStatus = record.cleanupStatus ??
+      (record.cleanupLevel === 'none' || record.llmProvider === 'none'
+        ? 'disabled'
+        : undefined)
+    switch (cleanupStatus) {
+      case 'applied': cleanupApplied += 1; break
+      case 'unchanged': cleanupUnchanged += 1; break
+      case 'failed': cleanupFailed += 1; break
+      case 'disabled': cleanupDisabled += 1; break
     }
 
     const applicationNameValue = record.applicationName ?? record.application
@@ -378,21 +521,50 @@ export function summarizeInsights(
       applicationCategoryValue.trim()
         ? applicationCategoryValue.trim()
         : undefined
-    const key = applicationKey(applicationName, applicationCategory)
-    const application = applicationMap.get(key) ?? {
-      applicationName,
-      applicationCategory,
+    if (isKnownApplication(applicationName)) {
+      const key = applicationKey(applicationName, applicationCategory)
+      const application = applicationMap.get(key) ?? {
+        applicationName,
+        applicationCategory,
+        dictationCount: 0,
+        wordCount: 0,
+        durationMs: 0,
+      }
+      application.dictationCount += 1
+      application.wordCount += wordCount
+      application.durationMs += durationMs
+      applicationMap.set(key, application)
+    }
+
+    const category = normalizeInsightCategory(applicationCategory)
+    const categoryInsight = categoryMap.get(category) ?? {
       dictationCount: 0,
       wordCount: 0,
+      durationMs: 0,
     }
-    application.dictationCount += 1
-    application.wordCount += wordCount
-    applicationMap.set(key, application)
+    categoryInsight.dictationCount += 1
+    categoryInsight.wordCount += wordCount
+    categoryInsight.durationMs += durationMs
+    categoryMap.set(category, categoryInsight)
 
-    const date = toUtcDate(record.createdAt)
+    const hour = hourInTimeZone(record.createdAt, timeZone)
+    if (hour !== null) {
+      const part = dayPartForHour(hour)
+      const dayPart = dayPartMap.get(part) ?? {
+        dictationCount: 0,
+        wordCount: 0,
+        durationMs: 0,
+      }
+      dayPart.dictationCount += 1
+      dayPart.wordCount += wordCount
+      dayPart.durationMs += durationMs
+      dayPartMap.set(part, dayPart)
+    }
+
+    const date = toCalendarDate(record.createdAt)
     if (date) {
-      activityDates.add(date)
-      const activity = activityMap.get(date) ?? {
+      const activity = recordActivityMap.get(date) ?? {
+        date,
         dictationCount: 0,
         wordCount: 0,
         durationMs: 0,
@@ -400,21 +572,100 @@ export function summarizeInsights(
       activity.dictationCount += 1
       activity.wordCount += wordCount
       activity.durationMs += durationMs
-      activityMap.set(date, activity)
+      recordActivityMap.set(date, activity)
     }
   }
 
-  const totalDictations = records.length
+  const usageMap = new Map<string, MutableActivityDay>()
+  for (const usage of options.usage ?? []) {
+    if (!isValidCalendarDate(usage.date)) continue
+    const current = usageMap.get(usage.date) ?? {
+      date: usage.date,
+      dictationCount: 0,
+      wordCount: 0,
+      durationMs: 0,
+    }
+    current.dictationCount += nonNegativeInteger(usage.dictations)
+    current.wordCount += nonNegativeInteger(usage.words)
+    current.durationMs += nonNegativeNumber(usage.durationMs)
+    usageMap.set(usage.date, current)
+  }
+
+  const allActivityDates = new Set([
+    ...recordActivityMap.keys(),
+    ...usageMap.keys(),
+  ])
+  const activityMap = new Map<string, ActivityDayInsight>()
+  for (const date of allActivityDates) {
+    const recordActivity = recordActivityMap.get(date)
+    const usageActivity = usageMap.get(date)
+    activityMap.set(date, {
+      date,
+      dictationCount: Math.max(
+        recordActivity?.dictationCount ?? 0,
+        usageActivity?.dictationCount ?? 0,
+      ),
+      wordCount: Math.max(
+        recordActivity?.wordCount ?? 0,
+        usageActivity?.wordCount ?? 0,
+      ),
+      durationMs: Math.max(
+        recordActivity?.durationMs ?? 0,
+        usageActivity?.durationMs ?? 0,
+      ),
+    })
+  }
+
+  const activityByDay: ActivityDayInsight[] = [...activityMap.values()]
+    .filter((activity) =>
+      activity.dictationCount > 0 ||
+      activity.wordCount > 0 ||
+      activity.durationMs > 0,
+    )
+    .sort((left, right) =>
+      left.date < right.date ? -1 : left.date > right.date ? 1 : 0,
+    )
+
+  const activityDictations = activityByDay.reduce(
+    (sum, activity) => sum + activity.dictationCount,
+    0,
+  )
+  const activityWords = activityByDay.reduce(
+    (sum, activity) => sum + activity.wordCount,
+    0,
+  )
+  const activityDurationMs = activityByDay.reduce(
+    (sum, activity) => sum + activity.durationMs,
+    0,
+  )
+  const successfulDictations = Math.max(
+    retainedSuccessfulDictations,
+    activityDictations,
+  )
+  const totalDictations = successfulDictations
+  const totalWords = Math.max(retainedWords, activityWords)
+  const totalDurationMs = Math.max(retainedDurationMs, activityDurationMs)
   const totalDurationMinutes = roundToTwoDecimalPlaces(totalDurationMs / 60_000)
   const averageWordsPerDictation =
-    totalDictations === 0
+    successfulDictations === 0
       ? 0
-      : roundToTwoDecimalPlaces(totalWords / totalDictations)
+      : roundToTwoDecimalPlaces(totalWords / successfulDictations)
+
+  const knownApplicationTotals = [...applicationMap.values()].reduce(
+    (totals, application) => ({
+      words: totals.words + application.wordCount,
+      dictations: totals.dictations + application.dictationCount,
+    }),
+    { words: 0, dictations: 0 },
+  )
   const applicationUsage: ApplicationInsight[] = [...applicationMap.values()]
     .map((application) => ({
       ...application,
-      percentage: roundToTwoDecimalPlaces(
-        (application.wordCount / (totalWords || totalDictations)) * 100,
+      percentage: insightPercentage(
+        application.wordCount,
+        application.dictationCount,
+        knownApplicationTotals.words,
+        knownApplicationTotals.dictations,
       ),
     }))
     .sort(
@@ -428,22 +679,71 @@ export function summarizeInsights(
             : 0),
     )
 
-  const activityByDay: ActivityDayInsight[] = [...activityMap.entries()]
-    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-    .map(([date, activity]) => ({ date, ...activity }))
+  const categoryTotals = [...categoryMap.values()].reduce(
+    (totals, category) => ({
+      words: totals.words + category.wordCount,
+      dictations: totals.dictations + category.dictationCount,
+    }),
+    { words: 0, dictations: 0 },
+  )
+  const categoryUsage: CategoryInsight[] = insightCategories.map((category) => {
+    const insight = categoryMap.get(category) ?? {
+      dictationCount: 0,
+      wordCount: 0,
+      durationMs: 0,
+    }
+    return {
+      category,
+      ...insight,
+      percentage: insightPercentage(
+        insight.wordCount,
+        insight.dictationCount,
+        categoryTotals.words,
+        categoryTotals.dictations,
+      ),
+    }
+  })
 
+  const dayPartTotals = [...dayPartMap.values()].reduce(
+    (totals, part) => ({
+      words: totals.words + part.wordCount,
+      dictations: totals.dictations + part.dictationCount,
+    }),
+    { words: 0, dictations: 0 },
+  )
+  const dayPartUsage: DayPartInsight[] = insightDayParts.map((part) => {
+    const insight = dayPartMap.get(part) ?? {
+      dictationCount: 0,
+      wordCount: 0,
+      durationMs: 0,
+    }
+    return {
+      part,
+      ...insight,
+      percentage: insightPercentage(
+        insight.wordCount,
+        insight.dictationCount,
+        dayPartTotals.words,
+        dayPartTotals.dictations,
+      ),
+    }
+  })
+
+  const activityDates = new Set(activityByDay.map((activity) => activity.date))
   const sortedActivityDates = [...activityDates].sort()
   const latestActivityDate = sortedActivityDates.at(-1)
-  const asOfDate = isValidUtcDate(options.asOfDate)
+  const asOfDate = isValidCalendarDate(options.asOfDate)
     ? options.asOfDate
     : latestActivityDate
 
   let currentStreakDays = 0
   if (asOfDate) {
-    let cursor = asOfDate
+    let cursor = activityDates.has(asOfDate)
+      ? asOfDate
+      : shiftCalendarDate(asOfDate, -1)
     while (activityDates.has(cursor)) {
       currentStreakDays += 1
-      cursor = shiftUtcDate(cursor, -1)
+      cursor = shiftCalendarDate(cursor, -1)
     }
   }
 
@@ -452,29 +752,93 @@ export function summarizeInsights(
   let previousDate: string | undefined
   for (const date of sortedActivityDates) {
     runningStreakDays =
-      previousDate && shiftUtcDate(previousDate, 1) === date
+      previousDate && shiftCalendarDate(previousDate, 1) === date
         ? runningStreakDays + 1
         : 1
     longestStreakDays = Math.max(longestStreakDays, runningStreakDays)
     previousDate = date
   }
 
+  const recentDayCount = Math.min(
+    90,
+    Math.max(1, nonNegativeInteger(options.recentDayCount) || 14),
+  )
+  const recentDays = asOfDate
+    ? Array.from({ length: recentDayCount }, (_, index) => {
+        const date = shiftCalendarDate(asOfDate, index - recentDayCount + 1)
+        return activityMap.get(date) ?? {
+          date,
+          dictationCount: 0,
+          wordCount: 0,
+          durationMs: 0,
+        }
+      })
+    : []
+  const currentPeriod = asOfDate
+    ? periodInsight(activityMap, asOfDate, 0)
+    : null
+  const previousPeriod = asOfDate
+    ? periodInsight(activityMap, asOfDate, 7)
+    : null
+  const wordTrendPercent = currentPeriod && previousPeriod?.wordCount
+    ? roundToTwoDecimalPlaces(
+        ((currentPeriod.wordCount - previousPeriod.wordCount) /
+          previousPeriod.wordCount) * 100,
+      )
+    : null
+  const bestDay = activityByDay.reduce<ActivityDayInsight | null>(
+    (best, activity) => {
+      if (!best) return activity
+      if (activity.wordCount !== best.wordCount) {
+        return activity.wordCount > best.wordCount ? activity : best
+      }
+      if (activity.dictationCount !== best.dictationCount) {
+        return activity.dictationCount > best.dictationCount ? activity : best
+      }
+      return activity.date > best.date ? activity : best
+    },
+    null,
+  )
+
   return {
     totalDictations,
     totalWords,
+    estimatedTokens: Math.ceil((totalWords * 4) / 3),
     totalDurationMs,
     totalDurationMinutes,
     averageWpm: calculateWpm(totalWords, totalDurationMs),
     averageWordsPerDictation,
+    averageSessionDurationMs: successfulDictations > 0
+      ? Math.round(totalDurationMs / successfulDictations)
+      : 0,
+    longestSessionMs,
+    activeDays: activityByDay.length,
     totalFixes: dictionaryFixes + aiFixes,
     dictionaryFixes,
     aiFixes,
     successfulDictations,
     errorDictations,
     cancelledDictations,
+    insertedDictations,
+    clipboardFallbacks,
+    scratchpadSaves,
+    failedInsertions,
+    unattemptedInsertions,
+    cleanupApplied,
+    cleanupUnchanged,
+    cleanupFailed,
+    cleanupDisabled,
     applicationUsage,
+    categoryUsage,
+    dayPartUsage,
     activityByDay,
+    recentDays,
+    currentPeriod,
+    previousPeriod,
+    wordTrendPercent,
+    bestDay,
     currentStreakDays,
     longestStreakDays,
+    asOfDate: asOfDate ?? null,
   }
 }

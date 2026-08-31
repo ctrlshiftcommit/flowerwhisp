@@ -208,9 +208,8 @@ export interface TranscriptFields {
 }
 
 /**
- * A serializable history record. Cached wordCount is retained for display and
- * migration compatibility; summarizeInsights recalculates from transcript
- * text so stale demo/cache values cannot drive analytics.
+ * A serializable history record. Cached wordCount is retained for privacy
+ * modes that deliberately discard transcript text after processing.
  */
 export interface HistoryRecord extends TranscriptFields {
   readonly id: string
@@ -229,6 +228,13 @@ export interface HistoryRecord extends TranscriptFields {
   readonly style?: string
   readonly dictionaryFixCount?: number
   readonly aiFixCount?: number
+  readonly insertionOutcome?:
+    | 'inserted'
+    | 'copied'
+    | 'scratchpad'
+    | 'not-attempted'
+    | 'failed'
+  readonly cleanupStatus?: 'disabled' | 'applied' | 'unchanged' | 'failed'
   readonly status?: DictationOutcome
 }
 
@@ -239,14 +245,50 @@ export interface ApplicationInsight {
   readonly applicationCategory?: string
   readonly dictationCount: number
   readonly wordCount: number
+  readonly durationMs: number
   readonly percentage: number
 }
 
 export interface ActivityDayInsight {
-  /** UTC calendar date in YYYY-MM-DD form. */
+  /** Calendar date in YYYY-MM-DD form. */
   readonly date: string
   readonly dictationCount: number
   readonly wordCount: number
+  readonly durationMs: number
+}
+
+export type WritingInsightCategory = 'personal' | 'work' | 'email' | 'other'
+
+export interface CategoryInsight {
+  readonly category: WritingInsightCategory
+  readonly dictationCount: number
+  readonly wordCount: number
+  readonly durationMs: number
+  readonly percentage: number
+}
+
+export type DayPart = 'morning' | 'afternoon' | 'evening' | 'night'
+
+export interface DayPartInsight {
+  readonly part: DayPart
+  readonly dictationCount: number
+  readonly wordCount: number
+  readonly durationMs: number
+  readonly percentage: number
+}
+
+export interface PeriodInsight {
+  readonly startDate: string
+  readonly endDate: string
+  readonly dictationCount: number
+  readonly wordCount: number
+  readonly durationMs: number
+}
+
+export interface InsightUsageDay {
+  readonly date: string
+  readonly words: number
+  readonly dictations: number
   readonly durationMs: number
 }
 
@@ -256,23 +298,50 @@ export interface InsightsOptions {
    * latest valid activity date is used, keeping the function deterministic.
    */
   readonly asOfDate?: string
+  /** Privacy-safe daily totals persisted independently of transcript history. */
+  readonly usage?: ReadonlyArray<InsightUsageDay>
+  /** Used only for time-of-day grouping; activity dates follow persisted days. */
+  readonly timeZone?: string
+  readonly recentDayCount?: number
 }
 
 export interface InsightSummary {
   readonly totalDictations: number
   readonly totalWords: number
+  /** A word-derived estimate, not provider billing or API usage. */
+  readonly estimatedTokens: number
   readonly totalDurationMs: number
   readonly totalDurationMinutes: number
   readonly averageWpm: number
   readonly averageWordsPerDictation: number
+  readonly averageSessionDurationMs: number
+  readonly longestSessionMs: number
+  readonly activeDays: number
   readonly totalFixes: number
   readonly dictionaryFixes: number
   readonly aiFixes: number
   readonly successfulDictations: number
   readonly errorDictations: number
   readonly cancelledDictations: number
+  readonly insertedDictations: number
+  readonly clipboardFallbacks: number
+  readonly scratchpadSaves: number
+  readonly failedInsertions: number
+  readonly unattemptedInsertions: number
+  readonly cleanupApplied: number
+  readonly cleanupUnchanged: number
+  readonly cleanupFailed: number
+  readonly cleanupDisabled: number
   readonly applicationUsage: readonly ApplicationInsight[]
+  readonly categoryUsage: readonly CategoryInsight[]
+  readonly dayPartUsage: readonly DayPartInsight[]
   readonly activityByDay: readonly ActivityDayInsight[]
+  readonly recentDays: readonly ActivityDayInsight[]
+  readonly currentPeriod: PeriodInsight | null
+  readonly previousPeriod: PeriodInsight | null
+  readonly wordTrendPercent: number | null
+  readonly bestDay: ActivityDayInsight | null
   readonly currentStreakDays: number
   readonly longestStreakDays: number
+  readonly asOfDate: string | null
 }

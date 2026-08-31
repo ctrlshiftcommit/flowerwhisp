@@ -237,7 +237,11 @@ class DictationService : Service() {
     }
 
     private suspend fun stopAndProcess() {
-        val session = activeSession ?: return
+        val session = activeSession ?: run {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
         if (session.stopRequested) return
         session.stopRequested = true
         if (!session.startOutcome.await() || activeSession !== session) return
@@ -270,6 +274,7 @@ class DictationService : Service() {
 
     private suspend fun processStoppedRecording(session: RecordingSession, recording: AudioRecording) {
         var failureStatus = DictationStatus.TRANSCRIPTION_FAILED
+        var resultDisplayMs = SUCCESS_DISPLAY_MS
         try {
             val storedSettings = session.dependencies.settingsRepository.settings.first()
             val context = styleContextForPackage(session.token.packageName)
@@ -331,6 +336,7 @@ class DictationService : Service() {
                     DictationRuntime.onSuccess()
                 }
                 is TargetInsertionOutcome.ClipboardFallback -> {
+                    resultDisplayMs = RECOVERY_DISPLAY_MS
                     val id = persistRecovery(
                         session = session,
                         recording = recording,
@@ -345,7 +351,7 @@ class DictationService : Service() {
                     }
                 }
             }
-            finishAfterResult()
+            finishAfterResult(resultDisplayMs)
         } catch (failure: CancellationException) {
             withContext(NonCancellable) {
                 persistRecovery(
@@ -373,7 +379,7 @@ class DictationService : Service() {
                     else -> "FlowerWhisp could not finish the preserved dictation"
                 }
             DictationRuntime.onServiceError(message, id)
-            finishAfterResult()
+            finishAfterResult(RECOVERY_DISPLAY_MS)
         }
     }
 
@@ -539,8 +545,8 @@ class DictationService : Service() {
         stopSelf()
     }
 
-    private suspend fun finishAfterResult() {
-        kotlinx.coroutines.delay(1_500)
+    private suspend fun finishAfterResult(displayMs: Long) {
+        kotlinx.coroutines.delay(displayMs)
         val capabilities = CapabilityMonitor(this).snapshot(
             accessibilityConnected = FlowerWhispAccessibilityService.isConnected(),
         )
@@ -687,6 +693,8 @@ class DictationService : Service() {
         private const val REQUEST_CANCEL = 4109
         private const val MIN_RECORDING_DURATION_MS = 650L
         private const val MAX_RECORDING_DURATION_MS = 15L * 60L * 1_000L
+        private const val SUCCESS_DISPLAY_MS = 1_500L
+        private const val RECOVERY_DISPLAY_MS = 6_000L
 
         fun startFromBubble(context: Context, token: TargetToken): String? {
             if (OverlayRuntime.status.value !is OverlayStatus.Visible) {

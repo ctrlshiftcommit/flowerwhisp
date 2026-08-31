@@ -6,6 +6,14 @@ export interface InsertionTarget {
   handle: string
   /** The control that owned the caret when dictation began, when Windows exposes it. */
   focusHandle?: string
+  processName?: string
+  windowTitle?: string
+  windowClass?: string
+  focusClass?: string
+  automationId?: string
+  controlType?: string
+  /** Reduced locally so the focused control's accessible name/value never leaves Windows capture. */
+  isBrowserAddressBar?: boolean
 }
 
 export interface InsertionOutcome {
@@ -19,6 +27,7 @@ const foregroundWindowScript = `
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class FlowerWhispForegroundWindow {
   [StructLayout(LayoutKind.Sequential)]
   public struct RECT {
@@ -49,6 +58,12 @@ public static class FlowerWhispForegroundWindow {
 
   [DllImport("user32.dll")]
   public static extern bool GetGUIThreadInfo(uint threadId, ref GUITHREADINFO threadInfo);
+
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  public static extern int GetWindowText(IntPtr window, StringBuilder text, int count);
+
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  public static extern int GetClassName(IntPtr window, StringBuilder text, int count);
 }
 '@
 $window = [FlowerWhispForegroundWindow]::GetForegroundWindow()
@@ -62,8 +77,68 @@ $threadInfo.cbSize = [Runtime.InteropServices.Marshal]::SizeOf([type][FlowerWhis
 if ($threadId -ne 0 -and [FlowerWhispForegroundWindow]::GetGUIThreadInfo($threadId, [ref]$threadInfo) -and $threadInfo.hwndFocus -ne [IntPtr]::Zero) {
   $focusHandle = $threadInfo.hwndFocus.ToInt64()
 }
-[Console]::WriteLine("$($window.ToInt64())|$focusHandle")
+$processName = ''
+try { $processName = (Get-Process -Id $processId -ErrorAction Stop).ProcessName } catch {}
+
+$windowTitleBuilder = New-Object System.Text.StringBuilder 512
+[void][FlowerWhispForegroundWindow]::GetWindowText($window, $windowTitleBuilder, $windowTitleBuilder.Capacity)
+$windowClassBuilder = New-Object System.Text.StringBuilder 160
+[void][FlowerWhispForegroundWindow]::GetClassName($window, $windowClassBuilder, $windowClassBuilder.Capacity)
+
+$focusClass = ''
+$automationId = ''
+$controlType = ''
+$focusName = ''
+try {
+  Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
+  $focusedElement = [System.Windows.Automation.AutomationElement]::FocusedElement
+  if ($null -ne $focusedElement) {
+    try { $focusClass = $focusedElement.Current.ClassName } catch {}
+    try { $automationId = $focusedElement.Current.AutomationId } catch {}
+    try { $controlType = $focusedElement.Current.ControlType.ProgrammaticName } catch {}
+    try { $focusName = $focusedElement.Current.Name } catch {}
+  }
+} catch {}
+if (-not $focusClass -and $focusHandle -ne 0) {
+  $focusClassBuilder = New-Object System.Text.StringBuilder 160
+  [void][FlowerWhispForegroundWindow]::GetClassName([IntPtr]::new($focusHandle), $focusClassBuilder, $focusClassBuilder.Capacity)
+  $focusClass = $focusClassBuilder.ToString()
+}
+
+$browserProcesses = @('chrome', 'msedge', 'firefox', 'brave', 'brave-browser', 'opera', 'opera_gx', 'vivaldi', 'arc')
+$focusDescriptor = "$focusClass $automationId $focusName"
+$isBrowserAddressBar = $browserProcesses -contains $processName.ToLowerInvariant() -and $focusDescriptor -match '(?i)chrome_omniboxview|omnibox|urlbar|address(?: and search)? bar|search or enter (?:a )?(?:web )?address|location bar'
+
+[PSCustomObject]@{
+  handle = $window.ToInt64().ToString()
+  focusHandle = $focusHandle.ToString()
+  processName = $processName
+  windowTitle = $windowTitleBuilder.ToString()
+  windowClass = $windowClassBuilder.ToString()
+  focusClass = $focusClass
+  automationId = $automationId
+  controlType = $controlType
+  isBrowserAddressBar = $isBrowserAddressBar
+} | ConvertTo-Json -Compress
 `
+
+interface ForegroundWindowPayload {
+  handle?: unknown
+  focusHandle?: unknown
+  processName?: unknown
+  windowTitle?: unknown
+  windowClass?: unknown
+  focusClass?: unknown
+  automationId?: unknown
+  controlType?: unknown
+  isBrowserAddressBar?: unknown
+}
+
+const boundedMetadata = (value: unknown, maxLength: number): string | undefined => {
+  if (typeof value !== 'string') return undefined
+  const normalized = value.trim().slice(0, maxLength)
+  return normalized || undefined
+}
 
 const captureForegroundWindow = (): InsertionTarget | null => {
   if (process.platform !== 'win32') return null
@@ -73,8 +148,25 @@ const captureForegroundWindow = (): InsertionTarget | null => {
     { encoding: 'utf8', windowsHide: true, timeout: 3_000 },
   )
   if (result.error || result.status !== 0) return null
-  const [handle, focusHandle] = (result.stdout.trim().split(/\s+/)[0] ?? '').split('|')
-  return /^\d+$/.test(handle) ? { handle, ...(focusHandle && /^\d+$/.test(focusHandle) && focusHandle !== '0' ? { focusHandle } : {}) } : null
+  try {
+    const payload = JSON.parse(result.stdout.trim()) as ForegroundWindowPayload
+    const handle = boundedMetadata(payload.handle, 32)
+    const focusHandle = boundedMetadata(payload.focusHandle, 32)
+    if (!handle || !/^\d+$/.test(handle)) return null
+    return {
+      handle,
+      ...(focusHandle && /^\d+$/.test(focusHandle) && focusHandle !== '0' ? { focusHandle } : {}),
+      ...(boundedMetadata(payload.processName, 120) ? { processName: boundedMetadata(payload.processName, 120) } : {}),
+      ...(boundedMetadata(payload.windowTitle, 512) ? { windowTitle: boundedMetadata(payload.windowTitle, 512) } : {}),
+      ...(boundedMetadata(payload.windowClass, 160) ? { windowClass: boundedMetadata(payload.windowClass, 160) } : {}),
+      ...(boundedMetadata(payload.focusClass, 160) ? { focusClass: boundedMetadata(payload.focusClass, 160) } : {}),
+      ...(boundedMetadata(payload.automationId, 160) ? { automationId: boundedMetadata(payload.automationId, 160) } : {}),
+      ...(boundedMetadata(payload.controlType, 120) ? { controlType: boundedMetadata(payload.controlType, 120) } : {}),
+      isBrowserAddressBar: payload.isBrowserAddressBar === true,
+    }
+  } catch {
+    return null
+  }
 }
 
 const pasteScript = (handle: string, focusHandle = ''): string => `

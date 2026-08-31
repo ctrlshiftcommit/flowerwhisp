@@ -1,5 +1,8 @@
 import type { CleanupStatus, DictationRecord, PublicSettings, ProviderId } from '../../shared/ipc'
+import type { WritingApplicationContext, WritingPurpose } from '../../shared/writingContext'
 import { applyDictionary, countWords } from '../domain'
+import { detectApplicationContext } from './applicationContext'
+import type { InsertionTarget } from './insertion'
 import { GroqProvider, LocalTranscriptionProvider, ProviderError, type AudioInput } from './providers'
 import { JsonStateStore } from './store'
 import { SecretStore } from './secrets'
@@ -7,6 +10,11 @@ import { SecretStore } from './secrets'
 export interface PipelineRequest {
   audio: AudioInput
   settings: PublicSettings
+  insertionTarget?: InsertionTarget | null
+}
+
+interface ResolvedApplicationContext extends WritingApplicationContext {
+  automaticCleanupAllowed: boolean
 }
 
 export interface PipelineResult {
@@ -34,9 +42,64 @@ const changedWordCount = (before: string, after: string): number => {
 
 export class DictationPipeline {
   private readonly groq: GroqProvider
+  private readonly applicationCategoryCache = new Map<string, WritingPurpose>()
 
   public constructor(private readonly store: JsonStateStore, private readonly secrets: SecretStore) {
     this.groq = new GroqProvider(() => this.secrets.getGroqKey())
+  }
+
+  private async resolveApplicationContext(
+    target: InsertionTarget | null | undefined,
+    settings: PublicSettings,
+  ): Promise<ResolvedApplicationContext> {
+    const detection = detectApplicationContext(target)
+    if (detection.purpose) {
+      return {
+        applicationName: detection.applicationName,
+        purpose: detection.purpose,
+        source: detection.source,
+        automaticCleanupAllowed: detection.automaticCleanupAllowed,
+      }
+    }
+
+    const canClassify = settings.cleanupLevel !== 'none'
+      && detection.automaticCleanupAllowed
+      && detection.classifierInput
+      && detection.cacheKey
+    if (canClassify) {
+      const cached = this.applicationCategoryCache.get(detection.cacheKey as string)
+      if (cached) {
+        return {
+          applicationName: detection.applicationName,
+          purpose: cached,
+          source: 'classifier',
+          automaticCleanupAllowed: true,
+        }
+      }
+      try {
+        const purpose = await this.groq.classifyApplication(
+          { applicationExecutable: detection.classifierInput as string },
+          settings,
+        )
+        this.applicationCategoryCache.set(detection.cacheKey as string, purpose)
+        return {
+          applicationName: detection.applicationName,
+          purpose,
+          source: 'classifier',
+          automaticCleanupAllowed: true,
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Application classification failed.'
+        console.warn(`[context] classifier failed; using other category: ${message}`)
+      }
+    }
+
+    return {
+      applicationName: detection.applicationName,
+      purpose: 'other',
+      source: 'fallback',
+      automaticCleanupAllowed: detection.automaticCleanupAllowed,
+    }
   }
 
   public async run(request: PipelineRequest): Promise<PipelineResult> {
@@ -59,17 +122,21 @@ export class DictationPipeline {
     )
     const rawText = transcription.text
     const cleanedText = dictionary.text
+    const applicationContext = await this.resolveApplicationContext(request.insertionTarget, request.settings)
+    const configuredStyleId = request.settings.styleByCategory[applicationContext.purpose] ?? request.settings.defaultStyle
+    const style = snapshot.styles.find((candidate) => candidate.id === configuredStyleId && candidate.category === applicationContext.purpose)
+      ?? snapshot.styles.find((candidate) => candidate.category === applicationContext.purpose)
     let finalText = cleanedText
     let cleanupStatus: CleanupStatus = 'disabled'
     let cleanupError: string | undefined
 
-    if (request.settings.cleanupLevel !== 'none') {
-      const style = snapshot.styles.find((candidate) => candidate.id === request.settings.defaultStyle)
+    if (request.settings.cleanupLevel !== 'none' && applicationContext.automaticCleanupAllowed) {
       try {
         const polished = await this.groq.cleanup(
           cleanedText,
           request.settings,
-          style?.rules ?? [],
+          style,
+          applicationContext,
         )
         finalText = polished.text
         cleanupStatus = polished.changed ? 'applied' : 'unchanged'
@@ -94,14 +161,14 @@ export class DictationPipeline {
       finalText: storedText ? '' : finalText,
       durationMs: request.audio.durationMs,
       wordCount: countWords(finalText),
-      application: 'Target not verified',
-      category: 'Other',
+      application: applicationContext.applicationName,
+      category: applicationContext.purpose,
       transcriptionProvider: provider,
       transcriptionModel: request.settings.transcriptionModel,
-      llmProvider: request.settings.cleanupLevel === 'none' ? 'none' : 'groq',
+      llmProvider: cleanupStatus === 'disabled' ? 'none' : 'groq',
       llmModel: request.settings.llmModel,
       cleanupLevel: request.settings.cleanupLevel,
-      style: request.settings.defaultStyle,
+      style: style?.id ?? configuredStyleId,
       dictionaryFixCount: dictionary.replacements,
       aiFixCount: changedWordCount(cleanedText, finalText),
       insertionOutcome: 'not-attempted',

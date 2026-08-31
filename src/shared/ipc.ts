@@ -14,9 +14,12 @@ export type CleanupLevel = 'none' | 'light' | 'medium'
 export type DictationMode = 'toggle' | 'hold'
 export type { ShortcutActionId, ShortcutBindings } from './shortcuts'
 import type { ShortcutActionId, ShortcutBindings } from './shortcuts'
+import type { InsightSummary } from './domain'
 export type RetentionMode = 'forever' | '24h' | 'never'
 export type PillPosition = 'left' | 'center' | 'right'
 export type CleanupStatus = 'disabled' | 'applied' | 'unchanged' | 'failed'
+export type { WritingPurpose } from './writingContext'
+import type { WritingPurpose } from './writingContext'
 export type DictationPhase =
   | 'idle'
   | 'starting'
@@ -39,6 +42,7 @@ export interface PublicSettings {
   cleanupLevel: CleanupLevel
   cleanupPrompts: Record<CleanupLevel, string>
   defaultStyle: string
+  styleByCategory: Record<WritingPurpose, string>
   holdShortcut: string
   toggleShortcut: string
   shortcutBindings: ShortcutBindings
@@ -121,7 +125,7 @@ export interface StyleProfile {
   description: string
   example: string
   rules: string[]
-  category: 'personal' | 'work' | 'email' | 'other'
+  category: WritingPurpose
 }
 
 export interface TransformProfile {
@@ -165,6 +169,7 @@ export interface BootstrapPayload {
   transforms: TransformProfile[]
   recoveries: Array<Omit<RecoveryRecording, 'audioFileName'>>
   usage: UsageDay[]
+  insights: InsightSummary
   scratchpad: string
   hasGroqKey: boolean
   holdShortcutRegistered: boolean

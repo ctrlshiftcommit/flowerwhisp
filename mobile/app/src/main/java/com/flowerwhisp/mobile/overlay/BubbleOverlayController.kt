@@ -17,7 +17,6 @@ import com.flowerwhisp.mobile.domain.model.IdleBehavior
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlin.math.max
-import kotlin.math.min
 
 class BubbleOverlayController(
     context: Context,
@@ -26,6 +25,7 @@ class BubbleOverlayController(
     private val onExplicitTap: () -> Unit,
     private val onPushToTalkStart: () -> Unit,
     private val onPushToTalkFinish: () -> Unit,
+    private val onCancel: () -> Unit,
     private val onFailure: (String) -> Unit,
 ) {
     private val appContext = context.applicationContext
@@ -90,7 +90,10 @@ class BubbleOverlayController(
     }
 
     fun setVisibilityAllowed(allowed: Boolean) {
-        if (visibilityAllowed == allowed && ((allowed && view != null) || (!allowed && view == null))) return
+        if (visibilityAllowed == allowed && ((allowed && view != null) || (!allowed && view == null))) {
+            if (allowed) recalculatePosition()
+            return
+        }
         visibilityAllowed = allowed
         if (allowed) show() else hide("A supported field and live accessibility/overlay access are required")
     }
@@ -123,6 +126,7 @@ class BubbleOverlayController(
             onExplicitTap = onExplicitTap,
             onPushToTalkStart = onPushToTalkStart,
             onPushToTalkFinish = onPushToTalkFinish,
+            onCancel = onCancel,
         ).also {
             it.bubbleState = renderedState
             it.bubbleScale = bubbleScale
@@ -131,9 +135,10 @@ class BubbleOverlayController(
             it.idleExpanded = idleExpanded
             it.darkTheme = resolveDarkTheme()
         }
+        val environment = windowEnvironment()
         val params = WindowManager.LayoutParams(
-            bubbleView.desiredWidthPx().coerceAtLeast(hitTargetPx),
-            bubbleView.desiredHeightPx().coerceAtLeast(hitTargetPx),
+            bubbleView.desiredWidthPx().coerceIn(hitTargetPx, environment.safe.width().coerceAtLeast(hitTargetPx)),
+            bubbleView.desiredHeightPx().coerceIn(hitTargetPx, environment.safe.height().coerceAtLeast(hitTargetPx)),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
@@ -142,7 +147,7 @@ class BubbleOverlayController(
             gravity = Gravity.TOP or Gravity.START
             title = "FlowerWhisp bubble"
         }
-        position(params, safeBounds())
+        position(params, environment)
         try {
             windowManager.addView(bubbleView, params)
             view = bubbleView
@@ -174,19 +179,25 @@ class BubbleOverlayController(
 
     private fun moveBy(deltaX: Int, deltaY: Int) {
         val params = layoutParams ?: return
-        val safe = safeBounds()
-        params.x = (params.x + deltaX).coerceIn(safe.left, max(safe.left, safe.right - params.width))
+        val environment = windowEnvironment()
+        val safe = environment.safe
+        params.x = if (environment.imeVisible) {
+            safe.left
+        } else {
+            (params.x + deltaX).coerceIn(safe.left, max(safe.left, safe.right - params.width))
+        }
         params.y = (params.y + deltaY).coerceIn(safe.top, max(safe.top, safe.bottom - params.height))
         updateLayout("drag")
     }
 
     private fun snapAndRemember() {
         val params = layoutParams ?: return
-        val safe = safeBounds()
-        val left = safe.left
-        val right = max(left, safe.right - params.width)
-        snappedRight = params.x + params.width / 2 >= safe.centerX()
-        params.x = if (snappedRight) right else left
+        val environment = windowEnvironment()
+        val safe = environment.safe
+        if (!environment.imeVisible) {
+            snappedRight = params.x + params.width / 2 >= safe.centerX()
+        }
+        params.x = bubbleHorizontalPosition(safe.left, safe.right, params.width, snappedRight, environment.imeVisible)
         val verticalRange = max(1, safe.height() - params.height)
         verticalFraction = ((params.y - safe.top).toFloat() / verticalRange).coerceIn(0f, 1f)
         updateLayout("edge snap")
@@ -200,46 +211,50 @@ class BubbleOverlayController(
 
     private fun recalculatePosition() {
         val params = layoutParams ?: return
-        position(params, safeBounds())
+        position(params, windowEnvironment())
         updateLayout("recalculate")
     }
 
-    private fun position(params: WindowManager.LayoutParams, safe: Rect) {
-        val right = max(safe.left, safe.right - params.width)
-        params.x = if (snappedRight) right else safe.left
+    private fun position(params: WindowManager.LayoutParams, environment: WindowEnvironment) {
+        val safe = environment.safe
+        params.x = bubbleHorizontalPosition(safe.left, safe.right, params.width, snappedRight, environment.imeVisible)
         val verticalRange = max(0, safe.height() - params.height)
         params.y = safe.top + (verticalRange * verticalFraction).toInt()
     }
 
     private fun resizeForState(attached: BubbleOverlayView) {
         val params = layoutParams ?: return
-        val safe = safeBounds()
-        params.width = attached.desiredWidthPx().coerceAtLeast(hitTargetPx)
-        params.height = attached.desiredHeightPx().coerceAtLeast(hitTargetPx)
-        params.x = if (snappedRight) max(safe.left, safe.right - params.width) else safe.left
+        val environment = windowEnvironment()
+        val safe = environment.safe
+        params.width = attached.desiredWidthPx().coerceIn(hitTargetPx, safe.width().coerceAtLeast(hitTargetPx))
+        params.height = attached.desiredHeightPx().coerceIn(hitTargetPx, safe.height().coerceAtLeast(hitTargetPx))
+        params.x = bubbleHorizontalPosition(safe.left, safe.right, params.width, snappedRight, environment.imeVisible)
         val verticalRange = max(0, safe.height() - params.height)
         params.y = (safe.top + verticalRange * verticalFraction).toInt()
         updateLayout("resize")
     }
 
-    private fun safeBounds(): Rect {
+    private fun windowEnvironment(): WindowEnvironment {
         val metrics = windowManager.currentWindowMetrics
         val bounds = Rect(metrics.bounds)
         val stable = metrics.windowInsets.getInsetsIgnoringVisibility(
             WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout(),
         )
-        val dynamic = metrics.windowInsets.getInsets(
-            WindowInsets.Type.ime() or WindowInsets.Type.systemGestures(),
-        )
-        val leftInset = max(stable.left, dynamic.left)
-        val topInset = max(stable.top, dynamic.top)
-        val rightInset = max(stable.right, dynamic.right)
-        val bottomInset = max(stable.bottom, dynamic.bottom)
-        return Rect(
-            bounds.left + leftInset,
-            bounds.top + topInset,
-            max(bounds.left + leftInset + hitTargetPx, bounds.right - rightInset),
-            max(bounds.top + topInset + hitTargetPx, bounds.bottom - bottomInset),
+        val gestures = metrics.windowInsets.getInsets(WindowInsets.Type.systemGestures())
+        val ime = metrics.windowInsets.getInsets(WindowInsets.Type.ime())
+        val imeVisible = metrics.windowInsets.isVisible(WindowInsets.Type.ime()) && ime.bottom > 0
+        val leftInset = max(stable.left, max(gestures.left, ime.left))
+        val topInset = max(stable.top, max(gestures.top, ime.top))
+        val rightInset = max(stable.right, max(gestures.right, ime.right))
+        val bottomInset = max(stable.bottom, max(gestures.bottom, ime.bottom))
+        return WindowEnvironment(
+            safe = Rect(
+                bounds.left + leftInset,
+                bounds.top + topInset,
+                max(bounds.left + leftInset + hitTargetPx, bounds.right - rightInset),
+                max(bounds.top + topInset + hitTargetPx, bounds.bottom - bottomInset),
+            ),
+            imeVisible = imeVisible,
         )
     }
 
@@ -278,4 +293,9 @@ class BubbleOverlayController(
     private companion object {
         const val DEFAULT_VERTICAL_FRACTION = 0.68f
     }
+
+    private data class WindowEnvironment(
+        val safe: Rect,
+        val imeVisible: Boolean,
+    )
 }

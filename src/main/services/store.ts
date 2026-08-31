@@ -21,6 +21,7 @@ import {
   normalizeShortcutBindings,
 } from '../../shared/shortcuts'
 import { DEFAULT_CLEANUP_PROMPTS } from '../../shared/promptDefaults'
+import { WRITING_PURPOSES, type WritingPurpose } from '../../shared/writingContext'
 
 const LEGACY_CLEANUP_PROMPTS: Record<CleanupLevel, string> = {
   none: 'Make no language changes. Return the protected input exactly as supplied, including its wording and ordering.',
@@ -55,6 +56,12 @@ export const defaultSettings: PublicSettings = {
   cleanupLevel: 'light',
   cleanupPrompts: { ...DEFAULT_CLEANUP_PROMPTS },
   defaultStyle: 'personal-casual',
+  styleByCategory: {
+    personal: 'personal-casual',
+    work: 'work-clear',
+    email: 'email-formal',
+    other: 'other-formal',
+  },
   // Hold and toggle are deliberately separate: hold needs native key-up
   // delivery, while toggle is a one-shot accelerator pressed a second time.
   holdShortcut: DEFAULT_HOLD_SHORTCUT,
@@ -76,29 +83,177 @@ export const defaultSettings: PublicSettings = {
 export const defaultStyles: StyleProfile[] = [
   {
     id: 'personal-casual',
-    name: 'Personal casual',
-    description: 'Conversational, clear, and lightly punctuated.',
-    example: 'Hey, are we still on for coffee tomorrow?',
-    rules: ['Keep the tone conversational.', 'Use normal capitalization.', 'Do not add formality.'],
+    name: 'Formal',
+    description: 'Caps + Punctuation',
+    example: 'Hey, are you free for lunch tomorrow? Let\'s do 12 if that works for you.',
+    rules: [
+      'Use standard sentence capitalization.',
+      'Use conventional punctuation, including terminal punctuation.',
+      'Correct accidental caps-lock spans to normal sentence case while preserving acronyms and deliberate emphasis.',
+    ],
+    category: 'personal',
+  },
+  {
+    id: 'personal-light',
+    name: 'Casual',
+    description: 'Caps + Less punctuation',
+    example: 'Hey are you free for lunch tomorrow? Let\'s do 12 if that works for you',
+    rules: [
+      'Use standard sentence capitalization.',
+      'Use light punctuation and omit optional terminal punctuation, while keeping question marks when needed.',
+      'Correct accidental caps-lock spans to normal sentence case while preserving acronyms and deliberate emphasis.',
+    ],
+    category: 'personal',
+  },
+  {
+    id: 'personal-lowercase',
+    name: 'Very casual',
+    description: 'No Caps + Less punctuation',
+    example: 'hey are you free for lunch tomorrow? let\'s do 12 if that works for you',
+    rules: [
+      'Use lowercase sentence starts with light punctuation.',
+      'Preserve proper nouns, acronyms, code identifiers, and deliberate emphasis.',
+      'Correct accidental caps-lock spans without changing any words.',
+    ],
     category: 'personal',
   },
   {
     id: 'work-clear',
-    name: 'Work clear',
-    description: 'Direct and easy to scan without sounding stiff.',
-    example: 'I will share the revised notes by Thursday afternoon.',
-    rules: ['Prefer direct sentences.', 'Keep useful context.', 'Do not add a sign-off.'],
+    name: 'Formal',
+    description: 'Caps + Punctuation',
+    example: 'Hi team, I\'ll share the revised plan by Thursday afternoon.',
+    rules: [
+      'Use standard sentence capitalization.',
+      'Use conventional punctuation, including terminal punctuation.',
+      'Correct accidental caps-lock spans to normal sentence case while preserving acronyms and deliberate emphasis.',
+    ],
+    category: 'work',
+  },
+  {
+    id: 'work-casual',
+    name: 'Casual',
+    description: 'Caps + Less punctuation',
+    example: 'Hey team I\'ll share the revised plan by Thursday afternoon',
+    rules: [
+      'Use standard sentence capitalization.',
+      'Use light punctuation and omit optional terminal punctuation, while keeping question marks when needed.',
+      'Correct accidental caps-lock spans to normal sentence case while preserving acronyms and deliberate emphasis.',
+    ],
+    category: 'work',
+  },
+  {
+    id: 'work-excited',
+    name: 'Excited',
+    description: 'More exclamations',
+    example: 'Hi team! I\'ll share the revised plan by Thursday afternoon!',
+    rules: [
+      'Use standard sentence capitalization and clear punctuation.',
+      'Use an exclamation mark only where the speaker\'s dictated emphasis clearly supports it.',
+      'Correct accidental caps-lock spans to normal sentence case while preserving acronyms and deliberate emphasis.',
+    ],
     category: 'work',
   },
   {
     id: 'email-formal',
-    name: 'Email formal',
-    description: 'Polished email wording with the speaker’s meaning intact.',
+    name: 'Formal',
+    description: 'Caps + Punctuation',
     example: 'Thank you for the update. I will review the proposal and reply by Friday.',
-    rules: ['Use complete sentences.', 'Keep a respectful tone.', 'Do not invent a greeting or conclusion.'],
+    rules: [
+      'Use standard sentence capitalization.',
+      'Use conventional punctuation, including terminal punctuation.',
+      'Correct accidental caps-lock spans to normal sentence case while preserving acronyms and deliberate emphasis.',
+    ],
     category: 'email',
   },
+  {
+    id: 'email-casual',
+    name: 'Casual',
+    description: 'Caps + Less punctuation',
+    example: 'Thank you for the update I will review the proposal and reply by Friday',
+    rules: [
+      'Use standard sentence capitalization.',
+      'Use light punctuation and omit optional terminal punctuation, while keeping question marks when needed.',
+      'Correct accidental caps-lock spans to normal sentence case while preserving acronyms and deliberate emphasis.',
+    ],
+    category: 'email',
+  },
+  {
+    id: 'email-lowercase',
+    name: 'Very casual',
+    description: 'No Caps + Less punctuation',
+    example: 'thank you for the update i will review the proposal and reply by friday',
+    rules: [
+      'Use lowercase sentence starts with light punctuation.',
+      'Preserve proper nouns, acronyms, code identifiers, and deliberate emphasis.',
+      'Correct accidental caps-lock spans without changing any words.',
+    ],
+    category: 'email',
+  },
+  {
+    id: 'other-formal',
+    name: 'Formal',
+    description: 'Caps + Punctuation',
+    example: 'Please review the attached notes and let me know if anything is missing.',
+    rules: [
+      'Use standard sentence capitalization.',
+      'Use conventional punctuation, including terminal punctuation.',
+      'Correct accidental caps-lock spans to normal sentence case while preserving acronyms and deliberate emphasis.',
+    ],
+    category: 'other',
+  },
+  {
+    id: 'other-casual',
+    name: 'Casual',
+    description: 'Caps + Less punctuation',
+    example: 'Please review the attached notes and let me know if anything is missing',
+    rules: [
+      'Use standard sentence capitalization.',
+      'Use light punctuation and omit optional terminal punctuation, while keeping question marks when needed.',
+      'Correct accidental caps-lock spans to normal sentence case while preserving acronyms and deliberate emphasis.',
+    ],
+    category: 'other',
+  },
+  {
+    id: 'other-lowercase',
+    name: 'Very casual',
+    description: 'No Caps + Less punctuation',
+    example: 'please review the attached notes and let me know if anything is missing',
+    rules: [
+      'Use lowercase sentence starts with light punctuation.',
+      'Preserve proper nouns, acronyms, code identifiers, and deliberate emphasis.',
+      'Correct accidental caps-lock spans without changing any words.',
+    ],
+    category: 'other',
+  },
 ]
+
+const mergeStyles = (saved: unknown, defaults: StyleProfile[]): StyleProfile[] => {
+  const savedStyles = Array.isArray(saved) ? saved as StyleProfile[] : []
+  const defaultIds = new Set(defaults.map((style) => style.id))
+  const customStyles = savedStyles.filter((style) => style && typeof style.id === 'string' && !defaultIds.has(style.id))
+  return [...defaults, ...customStyles]
+}
+
+const resolveStyleByCategory = (
+  saved: unknown,
+  styles: StyleProfile[],
+  defaults: Record<WritingPurpose, string>,
+  legacyDefaultStyle: string,
+): Record<WritingPurpose, string> => {
+  const candidate = saved && typeof saved === 'object' ? saved as Partial<Record<WritingPurpose, unknown>> : {}
+  const resolved = { ...defaults }
+  for (const category of WRITING_PURPOSES) {
+    const styleId = candidate[category]
+    if (typeof styleId === 'string' && styles.some((style) => style.id === styleId && style.category === category)) {
+      resolved[category] = styleId
+    }
+  }
+  if (!saved) {
+    const legacyStyle = styles.find((style) => style.id === legacyDefaultStyle)
+    if (legacyStyle) resolved[legacyStyle.category] = legacyStyle.id
+  }
+  return resolved
+}
 
 export const defaultTransforms: TransformProfile[] = [
   {
@@ -123,7 +278,11 @@ export const defaultTransforms: TransformProfile[] = [
 
 export const emptySnapshot = (): AppSnapshot => ({
   version: 1,
-  settings: { ...defaultSettings },
+  settings: {
+    ...defaultSettings,
+    cleanupPrompts: { ...defaultSettings.cleanupPrompts },
+    styleByCategory: { ...defaultSettings.styleByCategory },
+  },
   records: [],
   dictionary: [],
   snippets: [],
@@ -148,6 +307,13 @@ export class JsonStateStore {
       const parsed = JSON.parse(raw) as Partial<AppSnapshot>
       const defaults = emptySnapshot()
       const mergedSettings = { ...defaults.settings, ...(parsed.settings ?? {}) }
+      const styles = mergeStyles(parsed.styles, defaults.styles)
+      const styleByCategory = resolveStyleByCategory(
+        parsed.settings?.styleByCategory,
+        styles,
+        defaults.settings.styleByCategory,
+        mergedSettings.defaultStyle,
+      )
       const shortcutBindings = normalizeShortcutBindings(parsed.settings?.shortcutBindings, {
         holdShortcut: parsed.settings?.holdShortcut,
         toggleShortcut: parsed.settings?.toggleShortcut,
@@ -179,6 +345,7 @@ export class JsonStateStore {
           // hidden llmProvider="none" silently defeat a selected cleanup card.
           llmProvider: mergedSettings.cleanupLevel === 'none' ? 'none' : 'groq',
           cleanupPrompts,
+          styleByCategory,
           holdShortcut: isValidHoldShortcut(mergedSettings.holdShortcut) ? mergedSettings.holdShortcut : defaults.settings.holdShortcut,
           toggleShortcut: isValidShortcut(mergedSettings.toggleShortcut) ? mergedSettings.toggleShortcut : defaults.settings.toggleShortcut,
           shortcutBindings,
@@ -186,7 +353,7 @@ export class JsonStateStore {
         records: Array.isArray(parsed.records) ? parsed.records : [],
         dictionary: Array.isArray(parsed.dictionary) ? parsed.dictionary : [],
         snippets: Array.isArray(parsed.snippets) ? parsed.snippets : [],
-        styles: Array.isArray(parsed.styles) && parsed.styles.length > 0 ? parsed.styles : defaults.styles,
+        styles,
         transforms,
         recoveries: Array.isArray(parsed.recoveries) ? parsed.recoveries : [],
         usage: Array.isArray(parsed.usage) ? parsed.usage : [],
