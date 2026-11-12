@@ -1,6 +1,8 @@
 package com.flowerwhisp.mobile.overlay
 
 import android.annotation.SuppressLint
+import android.animation.ValueAnimator
+import android.os.SystemClock
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
@@ -16,12 +18,15 @@ import com.flowerwhisp.mobile.domain.model.BubbleState
 import com.flowerwhisp.mobile.domain.model.ProcessingStage
 import kotlin.math.abs
 import kotlin.math.min
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 @SuppressLint("ViewConstructor")
 internal class BubbleOverlayView(
     context: Context,
     private val onDrag: (deltaX: Int, deltaY: Int) -> Unit,
     private val onDragFinished: () -> Unit,
+    private val onDragCancelled: () -> Unit,
     private val onExplicitTap: () -> Unit,
     private val onPushToTalkStart: () -> Unit,
     private val onPushToTalkFinish: () -> Unit,
@@ -53,6 +58,8 @@ internal class BubbleOverlayView(
     private var moved = false
     private var longPressActive = false
     private var tapX = 0f
+    private var visualLevel = 0f
+    private var lastFrameMs = 0L
     private val longPressAction = Runnable {
         if (!moved && bubbleState == BubbleState.Ready) {
             longPressActive = true
@@ -89,6 +96,10 @@ internal class BubbleOverlayView(
 
     var bubbleState: BubbleState = BubbleState.Hidden
         set(value) {
+            if (value is BubbleState.Recording && field !is BubbleState.Recording) {
+                visualLevel = 0f
+                lastFrameMs = 0L
+            }
             field = value
             contentDescription = descriptionFor(value)
             invalidate()
@@ -151,7 +162,7 @@ internal class BubbleOverlayView(
                 removeCallbacks(longPressAction)
                 if (longPressActive) onPushToTalkFinish()
                 longPressActive = false
-                if (moved) onDragFinished()
+                if (moved) onDragCancelled()
                 return true
             }
         }
@@ -215,17 +226,27 @@ internal class BubbleOverlayView(
 
     private fun drawRecording(canvas: Canvas, state: BubbleState.Recording) {
         val centerY = height / 2f
-        val level = state.level.coerceIn(0f, 1f)
+        val now = SystemClock.elapsedRealtime()
+        val animated = ValueAnimator.areAnimatorsEnabled()
+        val dt = if (lastFrameMs == 0L) 16f else (now - lastFrameMs).coerceIn(1L, 64L).toFloat()
+        lastFrameMs = now
+        val target = sqrt(state.level.coerceIn(0f, 1f))
+        val response = if (target > visualLevel) 65f else 180f
+        visualLevel += (target - visualLevel) * (dt / response).coerceAtMost(1f)
+        val phase = (now - state.startedAtElapsedMs) / 1000f
         drawCross(canvas, 25f * density, centerY, secondaryColor)
         line.color = accentColor
         line.alpha = (255 * bubbleOpacity).toInt()
-        val heights = floatArrayOf(0.34f, 0.62f + level * 0.32f, 0.9f, 0.62f + level * 0.32f, 0.34f)
-        heights.forEachIndexed { index, scale ->
+        repeat(5) { index ->
+            val envelope = 1f - abs(index - 2) * 0.15f
+            val wave = if (animated) (0.5f + 0.5f * sin(phase * (5.2f + index * 0.47f) + index * 1.35f)) else 0.5f
+            val scale = envelope * (0.06f + visualLevel * (0.45f + wave * 0.55f))
             val x = 61f * density + index * 7f * density
             val half = (5f + 20f * scale) * density / 2f
             canvas.drawLine(x, centerY - half, x, centerY + half, line)
         }
         drawCheck(canvas, width - 25f * density, centerY, primaryColor)
+        if (animated && isAttachedToWindow) postInvalidateOnAnimation()
     }
 
     private fun drawProcessing(canvas: Canvas, stage: ProcessingStage) {

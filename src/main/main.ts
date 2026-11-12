@@ -37,6 +37,12 @@ import type {
 } from '../shared/ipc'
 import type { DictationRecord, DictionaryEntry, RecoveryRecording, Snippet, TransformProfile } from '../shared/ipc'
 import {
+  normalizeSnippetTrigger,
+  SNIPPET_EXPANSION_MAX_LENGTH,
+  SNIPPET_TRIGGER_MAX_LENGTH,
+  validateSnippetDraft,
+} from '../shared/snippetRules'
+import {
   isDoubleTapMouseShortcut,
   isMouseGesture,
   isMouseShortcut,
@@ -2162,29 +2168,57 @@ const saveDictionary = async (entry: Omit<DictionaryEntry, 'id' | 'createdAt'> &
   return result(true, 'Dictionary saved.')
 }
 
-const saveSnippet = async (snippet: Omit<Snippet, 'id' | 'createdAt'> & { id?: string }): Promise<CommandResult> => {
-  if (!validateText(snippet.trigger, 80) || !validateText(snippet.expansion, 5_000) || !snippet.trigger.trim() || !snippet.expansion.trim()) {
-    return result(false, undefined, 'Add a trigger and an expansion.')
+const saveSnippet = async (value: unknown): Promise<CommandResult> => {
+  if (!value || typeof value !== 'object') return result(false, undefined, 'Invalid snippet.')
+
+  const candidate = value as Record<string, unknown>
+  if (
+    !validateText(candidate.trigger, SNIPPET_TRIGGER_MAX_LENGTH) ||
+    !validateText(candidate.expansion, SNIPPET_EXPANSION_MAX_LENGTH) ||
+    (candidate.id !== undefined && (!validateText(candidate.id, 200) || !candidate.id.trim())) ||
+    (candidate.enabled !== undefined && typeof candidate.enabled !== 'boolean')
+  ) {
+    return result(false, undefined, 'Invalid snippet.')
   }
+
+  const id = typeof candidate.id === 'string' ? candidate.id : undefined
+  const trigger = normalizeSnippetTrigger(candidate.trigger)
+  const expansion = candidate.expansion
+  let validationError: string | undefined
   await store.update((snapshot) => {
-    const next: Snippet = { ...snippet, id: snippet.id || randomUUID(), trigger: snippet.trigger.trim(), createdAt: new Date().toISOString() }
-    const index = snapshot.snippets.findIndex((candidate) => candidate.id === next.id)
+    validationError = validateSnippetDraft({ id, trigger, expansion }, snapshot.snippets)
+    if (validationError) return
+
+    const existing = id ? snapshot.snippets.find((snippet) => snippet.id === id) : undefined
+    const next: Snippet = {
+      id: id || randomUUID(),
+      trigger,
+      expansion,
+      enabled: candidate.enabled !== false,
+      createdAt: existing?.createdAt ?? new Date().toISOString(),
+    }
+    const index = snapshot.snippets.findIndex((snippet) => snippet.id === next.id)
     if (index >= 0) snapshot.snippets[index] = next
     else snapshot.snippets.unshift(next)
   })
+  if (validationError) return result(false, undefined, validationError)
   notifyBootstrapChanged()
   return result(true, 'Snippet saved.')
 }
 
 const saveTransform = async (transform: Omit<TransformProfile, 'builtIn'> & { builtIn?: boolean }): Promise<CommandResult> => {
   if (!validateText(transform.name, 120) || !validateText(transform.instructions, 5_000) || !transform.name.trim() || !transform.instructions.trim()) {
-    return result(false, undefined, 'Add a transform name and instructions.')
+    return result(false, undefined, 'Add a name (up to 120 characters) and instructions (up to 5,000 characters).')
   }
   if (transform.shortcut.trim() && (!isValidShortcut(transform.shortcut) || isMouseGesture(transform.shortcut))) {
     return result(false, undefined, 'Use a keyboard shortcut with at least one modifier and one final key for this Transform.')
   }
   const previous = await getSnapshot()
-  if (transform.shortcut.trim()) {
+  const existing = previous.transforms.find((candidate) => candidate.id === transform.id)
+  // Content edits must not depend on an existing global shortcut being available.
+  const shortcutChanged = (existing?.shortcut.trim() ?? '') !== transform.shortcut.trim()
+    || Boolean(existing?.enabled && existing.shortcut.trim()) !== Boolean(transform.enabled && transform.shortcut.trim())
+  if (shortcutChanged && transform.enabled && transform.shortcut.trim()) {
     const signature = shortcutSignature(transform.shortcut)
     const actionBindings = normalizeShortcutBindings(previous.settings.shortcutBindings, previous.settings)
     for (const action of SHORTCUT_ACTION_IDS) {
@@ -2202,7 +2236,7 @@ const saveTransform = async (transform: Omit<TransformProfile, 'builtIn'> & { bu
     if (index >= 0) snapshot.transforms[index] = next
     else snapshot.transforms.unshift(next)
   })
-  if (!shortcutRecording) {
+  if (shortcutChanged && !shortcutRecording) {
     await registerShortcuts(undefined, false)
     if (next.enabled && next.shortcut && !transformShortcutRegistrations[next.id]?.registered) {
       const error = transformShortcutRegistrations[next.id]?.error || 'The Transform shortcut could not be activated.'
@@ -2212,7 +2246,7 @@ const saveTransform = async (transform: Omit<TransformProfile, 'builtIn'> & { bu
     }
   }
   notifyBootstrapChanged()
-  return result(true, next.shortcut ? `Transform saved. ${next.shortcut} is active globally.` : 'Transform saved without a shortcut.')
+  return result(true, 'Transform saved.')
 }
 
 const registerIpc = (): void => {
@@ -2449,7 +2483,7 @@ const registerIpc = (): void => {
     notifyBootstrapChanged()
     return result(true)
   })
-  ipcMain.handle('snippets:save', (event, snippet) => (isTrustedSender(event) ? saveSnippet(snippet as Omit<Snippet, 'id' | 'createdAt'> & { id?: string }) : result(false, undefined, 'Unauthorized request.')))
+  ipcMain.handle('snippets:save', (event, snippet: unknown) => (isTrustedSender(event) ? saveSnippet(snippet) : result(false, undefined, 'Unauthorized request.')))
   ipcMain.handle('snippets:delete', async (event, id: unknown) => {
     if (!isTrustedSender(event) || typeof id !== 'string') return result(false, undefined, 'Invalid snippet.')
     await store.update((snapshot) => (snapshot.snippets = snapshot.snippets.filter((snippet) => snippet.id !== id)))

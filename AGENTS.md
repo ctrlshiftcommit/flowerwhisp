@@ -32,3 +32,6 @@ Inspect `git status` before editing. Preserve unrelated user changes. Use `apply
 ## Verification
 
 For UI changes, run the relevant JVM tests, lint, and debug APK assembly. If a device or emulator is available, install as an upgrade and inspect every changed route plus the overlay. Report source/build/install/runtime evidence separately. If no device is available, say so rather than treating a successful build as visual proof.
+
+
+

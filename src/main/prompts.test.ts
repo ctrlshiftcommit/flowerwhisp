@@ -42,6 +42,8 @@ describe('FlowerWhisp prompt contracts', () => {
     expect(prompt).toContain('Do not invent facts')
     expect(prompt).toContain('Prevent intent drift')
     expect(prompt).toContain('Preserve proper nouns')
+    expect(prompt).toContain('[[FLOWERWHISP_SNIPPET')
+    expect(prompt).toContain('character for character')
     expect(prompt).toContain('Never return meta-commentary')
     expect(prompt).toContain('Cleanup happens only after that preprocessing')
     expect(prompt).toContain('Configured style instructions')

@@ -53,6 +53,10 @@ import type {
   TransformProfile,
 } from '../shared/ipc'
 import { DEFAULT_CLEANUP_PROMPTS } from '../shared/promptDefaults'
+import {
+  SNIPPET_EXPANSION_MAX_LENGTH,
+  SNIPPET_TRIGGER_MAX_LENGTH,
+} from '../shared/snippetRules'
 import type { ShortcutKeyEvent } from '../shared/shortcuts'
 import {
   DEFAULT_HOLD_SHORTCUT,
@@ -73,7 +77,7 @@ const emptySettings: PublicSettings = {
   transcriptionProvider: 'groq',
   transcriptionModel: 'whisper-large-v3-turbo',
   llmProvider: 'groq',
-  llmModel: 'openai/gpt-oss-20b',
+  llmModel: 'openai/gpt-oss-120b',
   language: 'en',
   cleanupLevel: 'light',
   cleanupPrompts: { ...DEFAULT_CLEANUP_PROMPTS },
@@ -1123,9 +1127,9 @@ const InsightsPage = ({ data }: { data: BootstrapPayload }) => {
             <div className="analytics-calendar-range"><span>{formatInsightDate(calendarDays[0].date, { day: 'numeric', month: 'short' })}</span><span>through {formatInsightDate(insights.asOfDate as string, { day: 'numeric', month: 'short' })}</span></div>
             <div className="analytics-calendar-wrap">
               <div className="analytics-calendar-weekdays" aria-hidden="true">{['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, index) => <span key={`${day}-${index}`}>{day}</span>)}</div>
-              <div className="analytics-calendar" role="img" aria-label="Twelve-week dictation activity calendar">{calendarDays.map((day) => {
+              <div className="analytics-calendar" role="group" aria-label="Twelve-week dictation activity calendar">{calendarDays.map((day) => {
                 const label = `${formatInsightDate(day.date, { weekday: 'long', day: 'numeric', month: 'long' })}: ${pluralize(day.words, 'word')}, ${pluralize(day.dictations, 'dictation')}`
-                return <i className={`analytics-calendar-cell level-${day.level} ${day.future ? 'is-future' : ''}`} key={day.date} title={day.future ? `${formatInsightDate(day.date, { day: 'numeric', month: 'long' })}: future date` : label} aria-label={day.future ? undefined : label} />
+                return <button type="button" disabled={day.future} className={`analytics-calendar-cell level-${day.level} ${day.future ? 'is-future' : ''}`} key={day.date} aria-label={label}><span className="analytics-calendar-tooltip" role="tooltip">{label}</span></button>
               })}</div>
             </div>
             <div className="analytics-calendar-legend"><span>Less</span>{[0, 1, 2, 3, 4].map((level) => <i className={`analytics-calendar-cell level-${level}`} key={level} />)}<span>More</span></div>
@@ -1197,9 +1201,15 @@ const PromptEditorModal = ({ title, description, value, onClose, onSave }: { tit
       return
     }
     setSaving(true)
-    const response = await onSave(draft)
-    setSaving(false)
-    if (!response.ok) setError(response.error ?? 'Could not save this prompt.')
+    setError('')
+    try {
+      const response = await onSave(draft)
+      if (!response.ok) setError(response.error ?? 'Could not save this prompt.')
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Could not save this prompt. Please try again.')
+    } finally {
+      setSaving(false)
+    }
   }
   return <ReferenceModal title={title} description={description} onClose={onClose}><form className="reference-modal-form prompt-editor-form" onSubmit={save}><label htmlFor="prompt-editor-text">System instructions</label><textarea id="prompt-editor-text" value={draft} onChange={(event) => { setDraft(event.target.value); setError('') }} rows={12} spellCheck="false" /><div className="prompt-editor-note"><ShieldCheck size={16} /><span>These instructions are user-editable configuration. Flow still keeps the source-text and no-invention guardrails around them.</span></div>{error ? <p className="form-error" role="alert">{error}</p> : null}<div className="form-actions"><Button variant="quiet" onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" icon={Check} disabled={saving}>{saving ? 'Saving…' : 'Save prompt'}</Button></div></form></ReferenceModal>
 }
@@ -1241,17 +1251,117 @@ const DictionaryPage = ({ entries, onRefresh }: { entries: DictionaryEntry[]; on
 }
 
 const SnippetsPage = ({ snippets, onRefresh }: { snippets: Snippet[]; onRefresh: () => void }) => {
-  const [selectedId, setSelectedId] = useState(snippets[0]?.id ?? '')
+  const [selectedId, setSelectedId] = useState('')
   const [showEditor, setShowEditor] = useState(false)
   const [search, setSearch] = useState('')
+  const [error, setError] = useState<string>()
   const selected = snippets.find((snippet) => snippet.id === selectedId)
-  const [trigger, setTrigger] = useState(selected?.trigger ?? ';email')
-  const [expansion, setExpansion] = useState(selected?.expansion ?? 'Thanks for reaching out.\nI will get back to you shortly.')
-  useEffect(() => { if (selected) { setTrigger(selected.trigger); setExpansion(selected.expansion) } }, [selectedId])
+  const [trigger, setTrigger] = useState('')
+  const [expansion, setExpansion] = useState('')
   const filtered = snippets.filter((snippet) => `${snippet.trigger} ${snippet.expansion}`.toLowerCase().includes(search.toLowerCase()))
-  const openNew = () => { setSelectedId(''); setTrigger(''); setExpansion(''); setShowEditor(true) }
-  const save = async (event: FormEvent) => { event.preventDefault(); const response = await api.snippets.save({ id: selectedId || undefined, trigger, expansion, enabled: true }); if (response.ok) { setShowEditor(false); onRefresh() } }
-  return <div className="page page-library reference-library-page"><div className="reference-toolbar"><label className="search-field"><MagnifyingGlass size={19} /><span className="sr-only">Search snippets</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search" /></label><div><Button variant="primary" onClick={openNew}>Add new</Button></div></div><FlowPromo kind="snippets" onAction={openNew} /><section className="reference-entry-list">{filtered.map((snippet) => <article className="reference-entry" key={snippet.id}><div><strong>{snippet.trigger}</strong><span>{snippet.expansion}</span></div><div className="reference-entry-actions"><button type="button" onClick={() => { setSelectedId(snippet.id); setShowEditor(true) }}>Edit</button><IconButton label="Delete snippet" icon={Trash} onClick={async () => { await api.snippets.delete(snippet.id); onRefresh() }} /></div></article>)}{filtered.length === 0 ? <div className="reference-empty-state"><Quotes size={22} /><strong>{search ? 'No matches.' : 'No snippets yet.'}</strong><span>Save an email, intro, or prompt you type often.</span></div> : null}</section>{showEditor ? <ReferenceModal title={selectedId ? 'Edit snippet' : 'Add snippet'} description="Say a trigger word and Flow will expand it into the saved text." onClose={() => setShowEditor(false)}><form className="reference-modal-form snippet-modal-form" onSubmit={save}><label htmlFor="snippet-trigger">Snippet</label><input id="snippet-trigger" value={trigger} onChange={(event) => setTrigger(event.target.value)} placeholder="e.g. intro email" required /><label htmlFor="snippet-expansion">Expansion</label><div className="rich-text-editor"><textarea id="snippet-expansion" value={expansion} onChange={(event) => setExpansion(event.target.value)} rows={8} placeholder="Write the text Flow should insert." required /><span className="character-count">{expansion.length} characters</span></div><div className="form-actions"><Button variant="quiet" onClick={() => setShowEditor(false)}>Cancel</Button><Button type="submit" variant="primary" icon={Check}>{selectedId ? 'Save snippet' : 'Add snippet'}</Button></div></form></ReferenceModal> : null}</div>
+  const closeEditor = () => { setShowEditor(false); setError(undefined) }
+  const openNew = () => {
+    setSelectedId('')
+    setTrigger('')
+    setExpansion('')
+    setError(undefined)
+    setShowEditor(true)
+  }
+  const openEdit = (snippet: Snippet) => {
+    setSelectedId(snippet.id)
+    setTrigger(snippet.trigger)
+    setExpansion(snippet.expansion)
+    setError(undefined)
+    setShowEditor(true)
+  }
+  const save = async (event: FormEvent) => {
+    event.preventDefault()
+    setError(undefined)
+    try {
+      const response = await api.snippets.save({
+        id: selectedId || undefined,
+        trigger,
+        expansion,
+        enabled: selected?.enabled !== false,
+      })
+      if (!response.ok) {
+        setError(response.error ?? 'Snippet could not be saved.')
+        return
+      }
+      setShowEditor(false)
+      onRefresh()
+    } catch {
+      setError('Snippet could not be saved.')
+    }
+  }
+
+  return (
+    <div className="page page-library reference-library-page">
+      <div className="reference-toolbar">
+        <label className="search-field">
+          <MagnifyingGlass size={19} />
+          <span className="sr-only">Search snippets</span>
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search" />
+        </label>
+        <div><Button variant="primary" onClick={openNew}>Add new</Button></div>
+      </div>
+      <FlowPromo kind="snippets" onAction={openNew} />
+      <section className="reference-entry-list">
+        {filtered.map((snippet) => (
+          <article className="reference-entry" key={snippet.id}>
+            <div><strong>{snippet.trigger}</strong><span>{snippet.expansion}</span></div>
+            <div className="reference-entry-actions">
+              <button type="button" onClick={() => openEdit(snippet)}>Edit</button>
+              <IconButton label="Delete snippet" icon={Trash} onClick={async () => { await api.snippets.delete(snippet.id); onRefresh() }} />
+            </div>
+          </article>
+        ))}
+        {filtered.length === 0 ? (
+          <div className="reference-empty-state">
+            <Quotes size={22} />
+            <strong>{search ? 'No matches.' : 'No snippets yet.'}</strong>
+            <span>Add reusable text.</span>
+          </div>
+        ) : null}
+      </section>
+      {showEditor ? (
+        <ReferenceModal
+          title={selectedId ? 'Edit snippet' : 'Add snippet'}
+          description="Say the phrase to insert the saved text."
+          onClose={closeEditor}
+        >
+          <form className="reference-modal-form snippet-modal-form" onSubmit={save}>
+            <label htmlFor="snippet-trigger">Spoken phrase</label>
+            <input
+              id="snippet-trigger"
+              value={trigger}
+              onChange={(event) => setTrigger(event.target.value)}
+              maxLength={SNIPPET_TRIGGER_MAX_LENGTH}
+              placeholder="e.g. my signature"
+              required
+            />
+            <label htmlFor="snippet-expansion">Text to insert</label>
+            <div className="rich-text-editor">
+              <textarea
+                id="snippet-expansion"
+                value={expansion}
+                onChange={(event) => setExpansion(event.target.value)}
+                maxLength={SNIPPET_EXPANSION_MAX_LENGTH}
+                rows={8}
+                required
+              />
+              <span className="character-count">{expansion.length} / {SNIPPET_EXPANSION_MAX_LENGTH}</span>
+            </div>
+            {error ? <p className="form-error" role="alert">{error}</p> : null}
+            <div className="form-actions">
+              <Button variant="quiet" onClick={closeEditor}>Cancel</Button>
+              <Button type="submit" variant="primary" icon={Check}>Save</Button>
+            </div>
+          </form>
+        </ReferenceModal>
+      ) : null}
+    </div>
+  )
 }
 
 type StyleTabId = 'personal' | 'work' | 'email' | 'other' | 'cleanup'
@@ -1320,7 +1430,7 @@ const HowItWorksModal = ({ onClose, onTryItOut }: { onClose: () => void; onTryIt
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="video-modal" role="dialog" aria-modal="true" aria-labelledby="transform-video-title"><div className="video-modal-header"><div><span className="detail-kicker">Transforms · Beta</span><h2 id="transform-video-title">How to use Transforms</h2><p>Build a reusable instruction and enable it when you want to rewrite dictated text.</p></div><IconButton label="Close transform guide" icon={X} onClick={onClose} /></div><div className="video-stage how-it-works-copy"><ol><li>Create a transform with a clear name and instruction.</li><li>Enable it from the transform card when you want it available.</li><li>Use the configured transform shortcut while text is selected.</li></ol><span>Transforms work anywhere you write when the selected transform is enabled.</span></div><div className="video-modal-footer"><Button variant="quiet" onClick={onClose}>Close</Button><Button variant="primary" onClick={onTryItOut}>Create a transform</Button></div></section></div>
 }
 
-const TransformsPage = ({ data, onRefresh }: { data: BootstrapPayload; onRefresh: () => void }) => {
+export const TransformsPage = ({ data, onRefresh }: { data: BootstrapPayload; onRefresh: () => void }) => {
   const transforms = data.transforms
   const [showForm, setShowForm] = useState(false)
   const [showHowItWorks, setShowHowItWorks] = useState(false)
@@ -1329,7 +1439,35 @@ const TransformsPage = ({ data, onRefresh }: { data: BootstrapPayload; onRefresh
   const [description, setDescription] = useState('')
   const [instructions, setInstructions] = useState('')
   const [shortcut, setShortcut] = useState('')
-  const save = async (event: FormEvent) => { event.preventDefault(); const response = await api.transforms.save({ id: `custom-${Date.now()}`, name, description, instructions, shortcut, enabled: true }); if (response.ok) { setName(''); setDescription(''); setInstructions(''); setShortcut(''); setShowForm(false); onRefresh() } }
+  const [saveError, setSaveError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const save = async (event?: FormEvent) => {
+    event?.preventDefault()
+    if (saving) return
+    const trimmedName = name.trim()
+    const trimmedInstructions = instructions.trim()
+    if (!trimmedName || !trimmedInstructions) {
+      setSaveError('Add a transform name and instructions before saving.')
+      return
+    }
+    setSaving(true)
+    setSaveError('')
+    try {
+      const uuid = globalThis.crypto?.randomUUID?.()
+      const id = `custom-${uuid ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`}`
+      const response = await api.transforms.save({ id, name: trimmedName, description: description.trim(), instructions: trimmedInstructions, shortcut: shortcut.trim(), enabled: true })
+      if (!response.ok) {
+        setSaveError(response.error ?? 'Could not save this transform.')
+        return
+      }
+      setName(''); setDescription(''); setInstructions(''); setShortcut(''); setShowForm(false)
+      onRefresh()
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'Could not save this transform. Please try again.')
+    } finally {
+      setSaving(false)
+    }
+  }
   const builtInCards = [
     { id: 'polish', name: 'Polish' },
     { id: 'prompt-engineer', name: 'Prompt Engineer' },
@@ -1365,10 +1503,11 @@ const TransformsPage = ({ data, onRefresh }: { data: BootstrapPayload; onRefresh
     return <div className="transform-shortcut-editor"><div className="transform-shortcut-heading"><span>Window shortcut</span>{transform.shortcut ? <button type="button" onClick={() => void saveShortcut(transform, '')}>Clear</button> : null}</div><ShortcutRecorder label={transform.shortcut ? `Change ${transform.name} shortcut` : `Set ${transform.name} shortcut`} action="handsFree" value={transform.shortcut} onChange={(value) => saveShortcut(transform, value)} /><span className={`transform-shortcut-status ${registration?.error ? 'is-error' : registration?.registered ? 'is-ready' : ''}`}><span className="shortcut-status-dot" />{status}</span></div>
   }
   return <div className="page page-transforms reference-transforms-page">
+    <section className="transform-promo"><h2>Speak a prompt</h2><p>Say “prompt” or “this is a prompt” at the beginning or end of your dictation. The refinement model will carry out your request and return only the result. Ordinary dictation is refined as usual. Requires text cleanup and a configured Groq key.</p></section>
      <div className="transform-options"><span>Enable a transform from its card when you want it available.</span><span className="transform-key-help">Edit the prompt from its card before using it.</span></div>
     <section className="transform-promo"><h2>Transform works anywhere you write</h2><p>Apply a Transform to rewrite, clean up, or restructure text after you dictate.</p><div><Button variant="secondary" onClick={() => setShowForm((value) => !value)}>Try it out</Button><button type="button" onClick={() => setShowHowItWorks(true)}>How it works</button></div></section>
     <div className="transform-heading"><h2>My Transforms</h2><button type="button" onClick={() => void reset()}>↶ &nbsp; Reset to defaults</button><Button variant="primary" onClick={() => setShowForm(true)}>Create New</Button></div>
-    {showForm ? <form className="transform-form" onSubmit={save}><div className="field-grid"><div><label htmlFor="transform-name">Name</label><input id="transform-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Make it concise" required /></div><div><label htmlFor="transform-description">Description</label><input id="transform-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="One-line explanation" /></div></div><label htmlFor="transform-instructions">Prompt</label><textarea id="transform-instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} rows={4} placeholder="Describe how Flow should rewrite the selected text." required /><div className="transform-new-shortcut"><span>Window shortcut (optional)</span>{shortcut ? <strong>{formatShortcut(shortcut)}</strong> : null}<ShortcutRecorder label={shortcut ? 'Change shortcut' : 'Set shortcut'} action="handsFree" value="" onChange={async (value) => { setShortcut(value); return { ok: true } }} />{shortcut ? <button type="button" onClick={() => setShortcut('')}>Clear</button> : null}</div><div className="form-actions"><Button variant="primary" type="submit" icon={Check}>Save</Button><Button variant="quiet" onClick={() => setShowForm(false)}>Cancel</Button></div></form> : null}
+{showForm ? <form className="transform-form" onSubmit={(event) => void save(event)}><div className="field-grid"><div><label htmlFor="transform-name">Name</label><input id="transform-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Make it concise" maxLength={120} required /></div><div><label htmlFor="transform-description">Description</label><input id="transform-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="One-line explanation" /></div></div><label htmlFor="transform-instructions">Prompt</label><textarea id="transform-instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} rows={4} maxLength={5000} placeholder="Describe how Flow should rewrite the selected text." required /><div className="transform-new-shortcut"><span>Window shortcut (optional)</span>{shortcut ? <strong>{formatShortcut(shortcut)}</strong> : null}<ShortcutRecorder label={shortcut ? 'Change shortcut' : 'Set shortcut'} action="handsFree" value="" onChange={async (value) => { setShortcut(value); return { ok: true } }} />{shortcut ? <button type="button" onClick={() => setShortcut('')}>Clear</button> : null}</div>{saveError ? <p className="form-error" role="alert">{saveError}</p> : null}<div className="form-actions"><Button variant="primary" type="button" icon={Check} disabled={saving} onClick={() => void save()}>{saving ? 'Saving…' : 'Save'}</Button><Button variant="quiet" onClick={() => setShowForm(false)}>Cancel</Button></div></form> : null}
     <div className="transform-card-grid">
        {builtInTransforms.map(({ card, transform }) => transform ? <div className="transform-card" key={transform.id}><h3>{card.name}</h3><p>{transform.description}</p>{shortcutEditor(transform)}<div className="transform-card-actions"><Button variant="quiet" onClick={() => setEditingTransform(transform)}>Edit prompt</Button><Toggle label={card.name} checked={transform.enabled} onChange={(value) => { void api.transforms.save({ ...transform, enabled: value }).then(onRefresh) }} /></div></div> : null)}
        {customTransforms.map((transform) => <div className="transform-card" key={transform.id}><h3>{transform.name}</h3><p>{transform.description || 'Custom rewrite instruction'}</p>{shortcutEditor(transform)}<div className="transform-card-actions"><Button variant="quiet" onClick={() => setEditingTransform(transform)}>Edit prompt</Button><Toggle label={transform.name} checked={transform.enabled} onChange={(value) => { void api.transforms.save({ ...transform, enabled: value }).then(onRefresh) }} /><IconButton label={`Delete ${transform.name}`} icon={Trash} onClick={async () => { await api.transforms.delete(transform.id); onRefresh() }} /></div></div>)}

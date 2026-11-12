@@ -51,6 +51,15 @@ class FlowerWhispAccessibilityService : AccessibilityService() {
             onPushToTalkFinish = ::onPushToTalkFinished,
             onCancel = ::onBubbleCancelled,
             onFailure = DictationRuntime::onOverlayFailure,
+            onSnooze = {
+                serviceScope.launch {
+                    runCatching {
+                        checkNotNull(settingsRepository).update {
+                            it.copy(snoozedUntilEpochMs = System.currentTimeMillis() + 15 * 60 * 1000L)
+                        }
+                    }.onFailure { DictationRuntime.onOverlayFailure("FlowerWhisp could not snooze the bubble") }
+                }
+            },
         )
         if (settingsRepository != null) {
             serviceScope.launch {
@@ -300,6 +309,7 @@ class FlowerWhispAccessibilityService : AccessibilityService() {
                 selectionStart = initialNode.textSelectionStart,
                 selectionEnd = initialNode.textSelectionEnd,
                 dictatedText = text,
+                isShowingHintText = initialNode.isShowingHintText,
             )
         ) {
             is InsertionPlanResult.Planned -> result.plan

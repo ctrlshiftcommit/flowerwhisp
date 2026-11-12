@@ -129,6 +129,7 @@ import com.flowerwhisp.mobile.domain.model.IdleBehavior
 import com.flowerwhisp.mobile.domain.model.LanguageMode
 import com.flowerwhisp.mobile.domain.model.RetentionMode
 import com.flowerwhisp.mobile.domain.model.Snippet
+import com.flowerwhisp.mobile.domain.model.SnippetRules
 import com.flowerwhisp.mobile.domain.model.StyleContext
 import com.flowerwhisp.mobile.domain.model.TransformProfile
 import com.flowerwhisp.mobile.domain.model.WritingStyle
@@ -1271,6 +1272,9 @@ private fun LibraryScreen(
 ) {
     ScreenColumn("library-${section.name.lowercase()}") {
         DestinationHeader(section.label, onOpenDrawer)
+        uiState.serviceMessage?.takeIf(String::isNotBlank)?.let { message ->
+            Text(message, style = MaterialTheme.typography.bodyMedium, color = SecondaryText)
+        }
         when (section) {
             LibrarySection.DICTIONARY -> DictionarySection(uiState.dictionary, actions)
             LibrarySection.SNIPPETS -> SnippetSection(uiState.snippets, actions)
@@ -1398,11 +1402,24 @@ private fun SnippetEditorDialog(
         title = if (initial == null) "Add snippet" else "Edit snippet",
         onDismiss = onDismiss,
         confirmLabel = if (initial == null) "Add snippet" else "Save",
-        confirmEnabled = trigger.isNotBlank() && expansion.isNotBlank(),
-        onConfirm = { onSave(Snippet(initial?.id ?: 0, trigger.trim(), expansion.trim(), enabled)) },
+        confirmEnabled = trigger.isNotBlank() &&
+            trigger.length <= SnippetRules.MAX_TRIGGER_LENGTH &&
+            expansion.isNotBlank() &&
+            expansion.length <= SnippetRules.MAX_EXPANSION_LENGTH,
+        onConfirm = { onSave(Snippet(initial?.id ?: 0, trigger, expansion, enabled)) },
     ) {
-        FlowerWhispTextField(trigger, { trigger = it }, label = "Trigger", singleLine = true)
-        FlowerWhispTextField(expansion, { expansion = it }, label = "Expanded text", minLines = 3)
+        FlowerWhispTextField(
+            trigger,
+            { value -> trigger = value.take(SnippetRules.MAX_TRIGGER_LENGTH) },
+            label = "Spoken phrase",
+            singleLine = true,
+        )
+        FlowerWhispTextField(
+            expansion,
+            { value -> expansion = value.take(SnippetRules.MAX_EXPANSION_LENGTH) },
+            label = "Text to insert",
+            minLines = 3,
+        )
     }
 }
 
@@ -1559,6 +1576,8 @@ private fun TransformsScreen(
     var editing by remember { mutableStateOf<TransformProfile?>(null) }
     ScreenColumn("transforms-screen") {
         DestinationHeader("Transforms", onOpenDrawer)
+        Text("Speak a prompt", style = MaterialTheme.typography.titleMedium)
+        Text("Say ‘prompt’ or ‘this is a prompt’ at the beginning or end. The refinement model will carry out your request and return only the result. Ordinary dictation is refined as usual. Requires AI refinement, text cleanup, and a configured Groq key.", color = SecondaryText)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             CompactAction("New transform", icon = Icons.Outlined.Add, onClick = { adding = true })
         }

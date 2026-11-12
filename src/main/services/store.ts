@@ -51,7 +51,7 @@ export const defaultSettings: PublicSettings = {
   transcriptionProvider: 'groq',
   transcriptionModel: 'whisper-large-v3-turbo',
   llmProvider: 'none',
-  llmModel: 'openai/gpt-oss-20b',
+  llmModel: 'openai/gpt-oss-120b',
   language: 'en',
   cleanupLevel: 'light',
   cleanupPrompts: { ...DEFAULT_CLEANUP_PROMPTS },
@@ -341,6 +341,7 @@ export class JsonStateStore {
         version: 1,
         settings: {
           ...mergedSettings,
+          llmModel: mergedSettings.llmModel === 'openai/gpt-oss-20b' ? defaults.settings.llmModel : mergedSettings.llmModel,
           // Cleanup level is the user-facing authority. Older builds let a
           // hidden llmProvider="none" silently defeat a selected cleanup card.
           llmProvider: mergedSettings.cleanupLevel === 'none' ? 'none' : 'groq',

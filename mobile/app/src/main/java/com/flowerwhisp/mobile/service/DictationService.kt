@@ -290,13 +290,14 @@ class DictationService : Service() {
             val dictionary = session.dependencies.dictionaryRepository.observeAll().first()
                 .filter { it.appliesTo(context) }
             val snippets = session.dependencies.snippetRepository.observeAll().first()
-            val safeText = DeterministicTextRefiner.refine(
+            val preparedText = DeterministicTextRefiner.prepare(
                 source = original,
                 style = settings.writingStyle,
                 settings = settings,
                 dictionary = dictionary,
                 snippets = snippets,
             )
+            val safeText = preparedText.safeText
             if (safeText.isBlank()) throw PipelineFailure("Text processing returned no text")
             session.safeText = safeText
 
@@ -305,13 +306,17 @@ class DictationService : Service() {
             val refined = if (settings.aiRefinement && settings.cleanupLevel != CleanupLevel.NONE) {
                 try {
                     session.dependencies.refinementEngine.refine(
-                        source = safeText,
+                        source = preparedText.cleanupInput,
                         style = settings.writingStyle,
                         settings = settings,
                         dictionary = dictionary,
                         snippets = snippets,
-                    ).trim().takeIf(String::isNotEmpty)?.also { result ->
-                        session.cleanupStatus = if (result == safeText) CleanupStatus.UNCHANGED else CleanupStatus.APPLIED
+                    ).trim().takeIf(String::isNotEmpty)?.let { candidate ->
+                        val restored = preparedText.restoreCleanup(candidate)
+                            ?: error("Text cleanup changed a protected snippet")
+                        session.cleanupStatus =
+                            if (restored == safeText) CleanupStatus.UNCHANGED else CleanupStatus.APPLIED
+                        restored
                     } ?: safeText.also { session.cleanupStatus = CleanupStatus.UNCHANGED }
                 } catch (failure: Throwable) {
                     session.cleanupStatus = CleanupStatus.FAILED

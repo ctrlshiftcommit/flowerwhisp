@@ -1,6 +1,7 @@
 import type { CleanupStatus, DictationRecord, PublicSettings, ProviderId } from '../../shared/ipc'
 import type { WritingApplicationContext, WritingPurpose } from '../../shared/writingContext'
 import { applyDictionary, countWords } from '../domain'
+import { protectSnippets } from '../snippetExpansion'
 import { detectApplicationContext } from './applicationContext'
 import type { InsertionTarget } from './insertion'
 import { GroqProvider, LocalTranscriptionProvider, ProviderError, type AudioInput } from './providers'
@@ -113,15 +114,22 @@ export class DictationPipeline {
             request.settings.localWorkingDirectory,
           ).transcribe(request.audio, request.settings.transcriptionModel)
 
-    const dictionary = applyDictionary(
-      transcription.text,
-      snapshot.dictionary.map((entry) => ({
-        spoken: entry.spoken,
-        replacement: entry.replacement,
-      })),
-    )
     const rawText = transcription.text
-    const cleanedText = dictionary.text
+    const snippetExpansion = protectSnippets(rawText, snapshot.snippets)
+    let dictionaryFixCount = 0
+    const protectedCleanedText = snippetExpansion.mapUnprotected((segment) => {
+      const dictionary = applyDictionary(
+        segment,
+        snapshot.dictionary.map((entry) => ({
+          spoken: entry.spoken,
+          replacement: entry.replacement,
+        })),
+      )
+      dictionaryFixCount += dictionary.replacements
+      return dictionary.text
+    })
+    const cleanedText = snippetExpansion.restore(protectedCleanedText)
+    if (cleanedText === null) throw new Error('Local snippet expansion failed before cleanup.')
     const applicationContext = await this.resolveApplicationContext(request.insertionTarget, request.settings)
     const configuredStyleId = request.settings.styleByCategory[applicationContext.purpose] ?? request.settings.defaultStyle
     const style = snapshot.styles.find((candidate) => candidate.id === configuredStyleId && candidate.category === applicationContext.purpose)
@@ -133,13 +141,17 @@ export class DictationPipeline {
     if (request.settings.cleanupLevel !== 'none' && applicationContext.automaticCleanupAllowed) {
       try {
         const polished = await this.groq.cleanup(
-          cleanedText,
+          protectedCleanedText,
           request.settings,
           style,
           applicationContext,
         )
-        finalText = polished.text
-        cleanupStatus = polished.changed ? 'applied' : 'unchanged'
+        const restored = snippetExpansion.restore(polished.text)
+        if (restored === null) {
+          throw new Error('Text cleanup changed a protected snippet. The safe transcript is still available.')
+        }
+        finalText = restored
+        cleanupStatus = finalText === cleanedText ? 'unchanged' : 'applied'
       } catch (error) {
         // Cleanup is optional. Preserve the deterministic transcript, but do
         // not pretend that a text-LLM request succeeded when it did not.
@@ -169,7 +181,7 @@ export class DictationPipeline {
       llmModel: request.settings.llmModel,
       cleanupLevel: request.settings.cleanupLevel,
       style: style?.id ?? configuredStyleId,
-      dictionaryFixCount: dictionary.replacements,
+      dictionaryFixCount,
       aiFixCount: changedWordCount(cleanedText, finalText),
       insertionOutcome: 'not-attempted',
       retention,
@@ -197,7 +209,7 @@ export class DictationPipeline {
       finalText,
       record,
       provider,
-      dictionaryFixCount: dictionary.replacements,
+      dictionaryFixCount,
       aiFixCount: changedWordCount(cleanedText, finalText),
       cleanupStatus,
       cleanupError,

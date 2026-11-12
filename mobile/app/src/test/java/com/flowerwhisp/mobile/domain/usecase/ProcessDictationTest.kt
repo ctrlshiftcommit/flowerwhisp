@@ -24,6 +24,23 @@ import org.junit.Test
 import java.io.File
 
 class ProcessDictationTest {
+    @Test fun refinementCanReturnRequestedOutput() = runBlocking {
+        val audio = File.createTempFile("flowerwhisp", ".m4a")
+        try {
+            val result = ProcessDictation(MemoryHistory(), EmptyDictionary, EmptySnippets)(
+                recording = AudioRecording(audio, 900),
+                settings = AppSettings(aiRefinement = true),
+                transcriptionEngine = TranscriptionEngine { _, _ -> "Prompt, write an email" },
+                refinementEngine = object : TextRefinementEngine {
+                    override suspend fun refine(source: String, style: WritingStyle, settings: AppSettings, dictionary: List<DictionaryEntry>, snippets: List<Snippet>) = "Could we reschedule our meeting?"
+                },
+            ) as ProcessingResult.Complete
+            assertEquals("Could we reschedule our meeting?", result.dictation.refinedText)
+            assertEquals("Prompt, write an email", result.dictation.originalText)
+        } finally {
+            audio.delete()
+        }
+    }
     @Test
     fun refinementFailurePreservesRawTextAndRecoveryAudio() = runBlocking {
         val history = MemoryHistory()
@@ -103,9 +120,48 @@ class ProcessDictationTest {
         )
 
         val record = (result as ProcessingResult.Complete).dictation
-        assertEquals("send to FlowerWhisp Thanks, Tushar", cleanupInput)
-        assertEquals(cleanupInput, record.safeText)
-        assertEquals(cleanupInput, record.refinedText)
+        assertTrue(cleanupInput.contains("send to FlowerWhisp"))
+        assertTrue(cleanupInput.contains("FLOWERWHISP_SNIPPET"))
+        assertFalse(cleanupInput.contains("Thanks, Tushar"))
+        assertEquals("send to FlowerWhisp Thanks, Tushar", record.safeText)
+        assertEquals(record.safeText, record.refinedText)
+        audio.delete()
+        Unit
+    }
+
+    @Test
+    fun cleanupThatDamagesSnippetMarkerFallsBackToExactSavedExpansion() = runBlocking {
+        val history = MemoryHistory()
+        val audio = File.createTempFile("flowerwhisp", ".m4a")
+        val expansion = "um, keep THIS exact.\nSecond line."
+        val result = ProcessDictation(
+            history,
+            EmptyDictionary,
+            FixedSnippets(listOf(Snippet(trigger = "my block", expansion = expansion))),
+        )(
+            recording = AudioRecording(audio, 1_000),
+            settings = AppSettings(
+                autoPunctuation = true,
+                removeFillers = true,
+                spokenCorrections = true,
+            ),
+            transcriptionEngine = TranscriptionEngine { _, _ -> "my block" },
+            refinementEngine = object : TextRefinementEngine {
+                override suspend fun refine(
+                    source: String,
+                    style: WritingStyle,
+                    settings: AppSettings,
+                    dictionary: List<DictionaryEntry>,
+                    snippets: List<Snippet>,
+                ): String = "the cleanup provider removed the marker"
+            },
+        )
+
+        val record = (result as ProcessingResult.Complete).dictation
+        assertEquals(expansion, record.safeText)
+        assertEquals(expansion, record.refinedText)
+        assertEquals(CleanupStatus.FAILED, record.cleanupStatus)
+        assertTrue(record.cleanupError.orEmpty().contains("protected snippet"))
         audio.delete()
         Unit
     }

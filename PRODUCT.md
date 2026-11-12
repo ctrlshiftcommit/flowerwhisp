@@ -35,6 +35,8 @@ Windows users leave the utility running while working in browsers, editors, chat
 - Microphone capture uses browser MediaRecorder in the renderer and sends audio to the main-process provider pipeline.
 - Transcription and LLM cleanup are separate provider interfaces. Groq is supported when configured; a configured local command/model folder is supported through a main-process adapter.
 - Dictionary replacements are deterministic and happen before cleanup. Raw transcription is never discarded.
+- Enabled snippets expand from complete spoken phrases after transcription. Matching is case-insensitive, does not fire inside a larger word, and supports spoken aliases such as “slash sig” for an older `/sig` trigger.
+- Saved snippet text stays local and is inserted exactly. Dictionary and Groq cleanup operate only on the surrounding dictation through protected markers; if cleanup damages a marker, FlowerWhisp falls back to the safe local expansion.
 - External insertion is intentionally not claimed in the strict Electron baseline. The app offers explicit clipboard copy for manual paste and a real app-owned Scratchpad path; no native helper or focus-stealing SendInput path is bundled.
 - API credentials remain in the main process and use Electron safeStorage where available; secrets must not be logged, committed, or returned to the renderer.
 - Open decisions: the exact local transcriber command and whether a future native key-up helper is acceptable remain configuration/runtime concerns.

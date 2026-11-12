@@ -8,6 +8,31 @@ import { emptySnapshot, JsonStateStore } from './store'
 
 const temporaryDirectories: string[] = []
 
+it('uses OSS 120b for new settings and upgrades saved OSS 20b settings', async () => {
+  expect(emptySnapshot().settings.llmModel).toBe('openai/gpt-oss-120b')
+  const directory = await mkdtemp(path.join(tmpdir(), 'flowerwhisp-model-'))
+  temporaryDirectories.push(directory)
+  const filePath = path.join(directory, 'state.json')
+  const snapshot = emptySnapshot()
+  snapshot.settings.llmModel = 'openai/gpt-oss-20b'
+  await writeFile(filePath, JSON.stringify(snapshot), 'utf8')
+  expect((await new JsonStateStore(filePath).load()).settings.llmModel).toBe('openai/gpt-oss-120b')
+})
+
+it('persists custom transforms and edited built-in prompts across restarts', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'flowerwhisp-transforms-'))
+  temporaryDirectories.push(directory)
+  const filePath = path.join(directory, 'state.json')
+  const store = new JsonStateStore(filePath)
+  await store.update((snapshot) => {
+    snapshot.transforms[0].instructions = 'My customized polish prompt.'
+    snapshot.transforms.push({ id: 'custom-test', name: 'Shorten', description: '', instructions: 'Use one sentence.', shortcut: '', enabled: true, builtIn: false })
+  })
+  const reloaded = await new JsonStateStore(filePath).load()
+  expect(reloaded.transforms.find((item) => item.id === 'polish')?.instructions).toBe('My customized polish prompt.')
+  expect(reloaded.transforms.find((item) => item.id === 'custom-test')?.instructions).toBe('Use one sentence.')
+})
+
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })

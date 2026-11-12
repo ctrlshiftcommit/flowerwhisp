@@ -4528,6 +4528,9 @@ body {
 }
 
 .analytics-calendar-cell {
+  position: relative;
+  padding: 0;
+  cursor: pointer;
   display: block;
   min-width: 0;
   min-height: 0;
@@ -4535,6 +4538,11 @@ body {
   border-radius: 3px;
   background: var(--color-surface-muted);
 }
+
+.analytics-calendar-tooltip { display: none; position: absolute; bottom: calc(100% + 8px); right: 0; width: 220px; padding: 10px 12px; background: #201e1c; color: #f5f0e7; border: 1px solid #63594e; border-radius: 6px; font: normal 12px/1.5 sans-serif; z-index: 20; pointer-events: none; }
+.analytics-calendar-cell:hover .analytics-calendar-tooltip,
+.analytics-calendar-cell:focus .analytics-calendar-tooltip { display: block; }
+.analytics-calendar-cell:focus-visible { outline: 2px solid #d17a5a; outline-offset: 2px; }
 
 .analytics-calendar-cell.level-1 {
   border-color: transparent;

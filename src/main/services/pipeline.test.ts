@@ -13,6 +13,146 @@ const jsonResponse = (value: unknown) => new Response(JSON.stringify(value), {
 describe('DictationPipeline cleanup wiring', () => {
   afterEach(() => vi.unstubAllGlobals())
 
+  it.each([false, true])('includes spoken-request system instructions and preserves failures (%s)', async (fail) => {
+    const snapshot = emptySnapshot()
+    snapshot.settings.cleanupLevel = 'light'
+    const store = {
+      load: async () => snapshot,
+      update: async (mutator: (value: typeof snapshot) => void) => { mutator(snapshot); return snapshot },
+    } as unknown as JsonStateStore
+    const secrets = { getGroqKey: async () => 'test-key' } as unknown as SecretStore
+    const source = 'Prompt, write an email asking to reschedule a meeting.'
+    let system = ''
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith('/audio/transcriptions')) return jsonResponse({ text: source })
+      const request = JSON.parse(String(init?.body))
+      system = request.messages[0].content
+      return fail ? new Response('', { status: 503 }) : jsonResponse({ choices: [{ message: { content: JSON.stringify({ status: 'ok', text: 'Could we reschedule our meeting?' }) } }] })
+    }))
+    const result = await new DictationPipeline(store, secrets).run({
+      audio: { bytes: new Uint8Array([1]), mimeType: 'audio/webm', durationMs: 300 },
+      settings: snapshot.settings,
+    })
+    expect(system).toContain('Spoken prompt exception')
+    expect(system).toContain('For ordinary dictation')
+    expect(result.rawText).toBe(source)
+    expect(result.finalText).toBe(fail ? source : 'Could we reschedule our meeting?')
+    expect(result.cleanupStatus).toBe(fail ? 'failed' : 'applied')
+  })
+
+  it('expands an enabled spoken snippet before insertion even when LLM cleanup is off', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.settings.cleanupLevel = 'none'
+    snapshot.snippets = [{
+      id: 'signature',
+      trigger: 'my signature',
+      expansion: 'Best,\nTushar',
+      enabled: true,
+      createdAt: '2026-08-31T00:00:00.000Z',
+    }]
+    const store = {
+      load: async () => snapshot,
+      update: async (mutator: (value: typeof snapshot) => void) => { mutator(snapshot); return snapshot },
+    } as unknown as JsonStateStore
+    const secrets = { getGroqKey: async () => 'test-key' } as unknown as SecretStore
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ text: 'Please add my signature' })))
+
+    const result = await new DictationPipeline(store, secrets).run({
+      audio: { bytes: new Uint8Array([1]), mimeType: 'audio/webm', durationMs: 300 },
+      settings: snapshot.settings,
+    })
+
+    expect(result.rawText).toBe('Please add my signature')
+    expect(result.cleanedText).toBe('Please add Best,\nTushar')
+    expect(result.finalText).toBe('Please add Best,\nTushar')
+    expect(result.record.finalText).toBe('Please add Best,\nTushar')
+  })
+
+  it('keeps saved snippet text local while Groq cleans only the surrounding dictation', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.settings.cleanupLevel = 'light'
+    snapshot.snippets = [{
+      id: 'private-block',
+      trigger: 'my private block',
+      expansion: 'PRIVATE please KEEP this\nExact',
+      enabled: true,
+      createdAt: '2026-08-31T00:00:00.000Z',
+    }]
+    snapshot.dictionary = [{
+      id: 'please',
+      spoken: 'please',
+      replacement: 'PLEASE',
+      scope: 'all',
+      protected: true,
+      createdAt: '2026-08-31T00:00:00.000Z',
+    }]
+    const store = {
+      load: async () => snapshot,
+      update: async (mutator: (value: typeof snapshot) => void) => { mutator(snapshot); return snapshot },
+    } as unknown as JsonStateStore
+    const secrets = { getGroqKey: async () => 'test-key' } as unknown as SecretStore
+    let cleanupSource = ''
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith('/audio/transcriptions')) {
+        return jsonResponse({ text: 'please insert my private block now' })
+      }
+      const request = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }
+      cleanupSource = (JSON.parse(request.messages[1].content) as { sourceText: string }).sourceText
+      return jsonResponse({
+        choices: [{ message: { content: JSON.stringify({ status: 'unchanged', text: cleanupSource }) } }],
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await new DictationPipeline(store, secrets).run({
+      audio: { bytes: new Uint8Array([1]), mimeType: 'audio/webm', durationMs: 300 },
+      settings: snapshot.settings,
+    })
+
+    expect(cleanupSource).toContain('[[FLOWERWHISP_SNIPPET')
+    expect(cleanupSource).not.toContain('PRIVATE')
+    expect(cleanupSource).not.toContain('KEEP this')
+    expect(result.cleanedText).toBe('PLEASE insert PRIVATE please KEEP this\nExact now')
+    expect(result.finalText).toBe(result.cleanedText)
+    expect(result.cleanupStatus).toBe('unchanged')
+    expect(result.dictionaryFixCount).toBe(1)
+  })
+
+  it('rejects cleanup that damages a snippet marker and keeps the safe local expansion', async () => {
+    const snapshot = emptySnapshot()
+    snapshot.settings.cleanupLevel = 'medium'
+    snapshot.snippets = [{
+      id: 'block',
+      trigger: 'my block',
+      expansion: 'Exact saved text.',
+      enabled: true,
+      createdAt: '2026-08-31T00:00:00.000Z',
+    }]
+    const store = {
+      load: async () => snapshot,
+      update: async (mutator: (value: typeof snapshot) => void) => { mutator(snapshot); return snapshot },
+    } as unknown as JsonStateStore
+    const secrets = { getGroqKey: async () => 'test-key' } as unknown as SecretStore
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) =>
+      String(input).endsWith('/audio/transcriptions')
+        ? jsonResponse({ text: 'my block' })
+        : jsonResponse({
+            choices: [{ message: { content: JSON.stringify({ status: 'ok', text: 'Marker removed.' }) } }],
+          }),
+    ))
+
+    const result = await new DictationPipeline(store, secrets).run({
+      audio: { bytes: new Uint8Array([1]), mimeType: 'audio/webm', durationMs: 300 },
+      settings: snapshot.settings,
+    })
+
+    expect(result.cleanedText).toBe('Exact saved text.')
+    expect(result.finalText).toBe('Exact saved text.')
+    expect(result.cleanupStatus).toBe('failed')
+    expect(result.cleanupError).toContain('protected snippet')
+    expect(result.record.cleanupStatus).toBe('failed')
+  })
+
   it('sends a separate Groq chat-completions request whenever cleanup is selected', async () => {
     const snapshot = emptySnapshot()
     snapshot.settings.cleanupLevel = 'light'

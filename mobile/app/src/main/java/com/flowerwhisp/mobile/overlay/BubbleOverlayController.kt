@@ -8,6 +8,9 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.WindowInsets
 import android.view.WindowManager
+import android.widget.TextView
+import android.graphics.drawable.GradientDrawable
+import com.flowerwhisp.mobile.R
 import com.flowerwhisp.mobile.domain.model.BubbleState
 import com.flowerwhisp.mobile.domain.model.AppSettings
 import com.flowerwhisp.mobile.domain.model.AppearanceMode
@@ -27,6 +30,7 @@ class BubbleOverlayController(
     private val onPushToTalkFinish: () -> Unit,
     private val onCancel: () -> Unit,
     private val onFailure: (String) -> Unit,
+    private val onSnooze: () -> Unit = {},
 ) {
     private val appContext = context.applicationContext
     private val windowManager = appContext.getSystemService(WindowManager::class.java)
@@ -42,6 +46,53 @@ class BubbleOverlayController(
     private var hapticsEnabled = true
     private var idleExpanded = false
     private var appearanceMode = AppearanceMode.DARK
+    private var snoozeTarget: TextView? = null
+    private var snoozeBounds: Rect? = null
+    private var dragging = false
+
+    private fun removeSnoozeTarget() {
+        snoozeTarget?.let { runCatching { windowManager.removeViewImmediate(it) } }
+        snoozeTarget = null
+        snoozeBounds = null
+        dragging = false
+    }
+
+    private fun showSnoozeTarget() {
+        if (snoozeTarget != null || renderedState != BubbleState.Ready) return
+        val safe = windowEnvironment().safe
+        val density = appContext.resources.displayMetrics.density
+        val width = (220 * density).toInt().coerceAtMost(safe.width())
+        val height = (64 * density).toInt()
+        val target = TextView(appContext).apply {
+            setText(R.string.bubble_snooze_drop)
+            textSize = 15f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFF5F0E7.toInt())
+            background = GradientDrawable().apply {
+                setColor(0xFF201E1C.toInt())
+                cornerRadius = 16 * density
+                setStroke((2 * density).toInt(), 0xFFD17A5A.toInt())
+            }
+        }
+        val params = WindowManager.LayoutParams(width, height,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = safe.centerX() - width / 2
+            y = safe.bottom - height
+            title = "FlowerWhisp snooze target"
+        }
+        runCatching { windowManager.addView(target, params) }.onSuccess {
+            snoozeTarget = target
+            snoozeBounds = Rect(params.x, params.y, params.x + width, params.y + height)
+        }.onFailure { reportFailure("snooze target", it) }
+    }
+
+    private fun overSnoozeTarget(): Boolean {
+        val params = layoutParams ?: return false
+        return snoozeBounds?.contains(params.x + params.width / 2, params.y + params.height / 2) == true
+    }
 
     init {
         OverlayRuntime.update(OverlayStatus.Hidden("No supported field is focused"))
@@ -123,6 +174,7 @@ class BubbleOverlayController(
             context = appContext,
             onDrag = ::moveBy,
             onDragFinished = ::snapAndRemember,
+            onDragCancelled = { removeSnoozeTarget(); recalculatePosition() },
             onExplicitTap = onExplicitTap,
             onPushToTalkStart = onPushToTalkStart,
             onPushToTalkFinish = onPushToTalkFinish,
@@ -161,6 +213,7 @@ class BubbleOverlayController(
     }
 
     private fun hide(reason: String) {
+        removeSnoozeTarget()
         val attached = view
         if (attached != null) {
             try {
@@ -178,19 +231,24 @@ class BubbleOverlayController(
     }
 
     private fun moveBy(deltaX: Int, deltaY: Int) {
+        dragging = true
+        showSnoozeTarget()
         val params = layoutParams ?: return
         val environment = windowEnvironment()
         val safe = environment.safe
-        params.x = if (environment.imeVisible) {
-            safe.left
-        } else {
-            (params.x + deltaX).coerceIn(safe.left, max(safe.left, safe.right - params.width))
-        }
+        params.x = (params.x + deltaX).coerceIn(safe.left, max(safe.left, safe.right - params.width))
         params.y = (params.y + deltaY).coerceIn(safe.top, max(safe.top, safe.bottom - params.height))
         updateLayout("drag")
+        snoozeTarget?.setText(if (overSnoozeTarget()) R.string.bubble_snooze_release else R.string.bubble_snooze_drop)
     }
 
     private fun snapAndRemember() {
+        val snooze = renderedState == BubbleState.Ready && overSnoozeTarget()
+        removeSnoozeTarget()
+        if (snooze) {
+            onSnooze()
+            return
+        }
         val params = layoutParams ?: return
         val environment = windowEnvironment()
         val safe = environment.safe
@@ -210,6 +268,7 @@ class BubbleOverlayController(
     }
 
     private fun recalculatePosition() {
+        if (dragging) return
         val params = layoutParams ?: return
         position(params, windowEnvironment())
         updateLayout("recalculate")

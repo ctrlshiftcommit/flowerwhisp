@@ -16,7 +16,9 @@ object InsertionPlanner {
         selectionStart: Int,
         selectionEnd: Int,
         dictatedText: String,
+        isShowingHintText: Boolean = false,
     ): InsertionPlanResult {
+        if (isShowingHintText) return plan("", 0, 0, dictatedText)
         if (dictatedText.isBlank()) {
             return InsertionPlanResult.Rejected("Blank dictation was not inserted")
         }

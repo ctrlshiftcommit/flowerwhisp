@@ -5,6 +5,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class InsertionPlannerTest {
+    @Test fun excludesAccessibilityPlaceholder() {
+        val result = InsertionPlanner.plan("Message", -1, -1, "Hello", isShowingHintText = true) as InsertionPlanResult.Planned
+        assertEquals("Hello", result.plan.replacementText)
+        assertEquals(5, result.plan.cursor)
+    }
+
+    @Test fun preservesRealTextMatchingACommonPlaceholder() {
+        val result = InsertionPlanner.plan("Message", 7, 7, "Hello", isShowingHintText = false) as InsertionPlanResult.Planned
+        assertEquals("Message Hello", result.plan.replacementText)
+    }
     @Test
     fun insertsAtCursorWithoutReplacingSurroundingText() {
         val result = InsertionPlanner.plan(

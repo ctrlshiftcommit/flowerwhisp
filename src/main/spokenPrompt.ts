@@ -1,0 +1,5 @@
+export const SPOKEN_PROMPT_SYSTEM = `Spoken prompt exception:
+Decide from sourceText whether the speaker is explicitly asking you to carry out a prompt. A cue such as "prompt", "this is a prompt", or an equivalent explicit phrase at the beginning or end marks the remaining text as a request to fulfill. A casual mention of the word prompt, quoted cues, or a cue without a request does not activate this behavior.
+For a marked request, remove the cue and carry out the request instead of correcting or restating it. This exception overrides the cleanup-only, source-fidelity, no-answering, and style restrictions above only as needed to fulfill that request. Return only the requested output, without acknowledgements, preambles, explanations, or unsolicited commentary. Do not invent personal facts or commitments; use placeholders for missing specifics. Use the requested language, or the speaker's language by default.
+For ordinary dictation, follow the normal refinement instructions above.
+In both cases, preserve protected snippet tokens and use the required JSON response format. Put only the resulting text in the text field; do not wrap the JSON in a Markdown fence.`

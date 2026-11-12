@@ -56,21 +56,34 @@ class ProcessDictation(
 
         val dictionary = dictionaryRepository.observeAll().first()
         val snippets = snippetRepository.observeAll().first()
-        val safeText = DeterministicTextRefiner.refine(
+        val preparedText = DeterministicTextRefiner.prepare(
             source = raw,
             style = settings.writingStyle,
             settings = settings,
             dictionary = dictionary,
             snippets = snippets,
         )
+        val safeText = preparedText.safeText
         var cleanupStatus = CleanupStatus.DISABLED
         var cleanupError: String? = null
         val refined = if (settings.aiRefinement && settings.cleanupLevel != CleanupLevel.NONE) {
             try {
-                refinementEngine.refine(safeText, settings.writingStyle, settings, dictionary, snippets).trim()
-                    .takeIf(String::isNotEmpty)
-                    ?.also { cleanupStatus = if (it == safeText) CleanupStatus.UNCHANGED else CleanupStatus.APPLIED }
-                    ?: safeText.also { cleanupStatus = CleanupStatus.UNCHANGED }
+                val cleanupCandidate = refinementEngine.refine(
+                    preparedText.cleanupInput,
+                    settings.writingStyle,
+                    settings,
+                    dictionary,
+                    snippets,
+                ).trim().takeIf(String::isNotEmpty)
+                if (cleanupCandidate == null) {
+                    safeText.also { cleanupStatus = CleanupStatus.UNCHANGED }
+                } else {
+                    val restored = preparedText.restoreCleanup(cleanupCandidate)
+                        ?: error("Text cleanup changed a protected snippet")
+                    restored.also {
+                        cleanupStatus = if (it == safeText) CleanupStatus.UNCHANGED else CleanupStatus.APPLIED
+                    }
+                }
             } catch (error: Exception) {
                 cleanupStatus = CleanupStatus.FAILED
                 cleanupError = error.safeMessage("Text cleanup failed")

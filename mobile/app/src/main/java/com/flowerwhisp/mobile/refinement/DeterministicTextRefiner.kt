@@ -13,11 +13,22 @@ internal object DeterministicTextRefiner {
         settings: AppSettings,
         dictionary: List<DictionaryEntry>,
         snippets: List<Snippet>,
-    ): String {
-        if (source.isBlank()) return ""
+    ): String = prepare(source, style, settings, dictionary, snippets).safeText
 
-        var result = source.trim().replace(WHITESPACE, " ")
-        result = applySnippets(result, snippets)
+    fun prepare(
+        source: String,
+        style: WritingStyle,
+        settings: AppSettings,
+        dictionary: List<DictionaryEntry>,
+        snippets: List<Snippet>,
+    ): PreparedDeterministicText {
+        if (source.isBlank()) return PreparedDeterministicText.empty()
+
+        val snippetExpansion = ProtectedSnippetExpansion.protect(
+            source = source.trim().replace(WHITESPACE, " "),
+            snippets = snippets,
+        )
+        var result = snippetExpansion.protectedText
         result = applyDictionary(result, dictionary)
         if (settings.removeFillers) result = removeFillers(result)
         if (settings.spokenCorrections) result = applySpokenCorrections(result)
@@ -25,17 +36,16 @@ internal object DeterministicTextRefiner {
         if (style == WritingStyle.CONCISE) result = removeImmediateRepetitions(result)
         result = tidySpacing(result)
         if (settings.autoPunctuation) result = addSentencePresentation(result)
-        return result.trim()
+        val cleanupInput = result.trim()
+        val safeText = checkNotNull(snippetExpansion.restore(cleanupInput)) {
+            "Local text cleanup damaged a protected snippet"
+        }
+        return PreparedDeterministicText(
+            cleanupInput = cleanupInput,
+            safeText = safeText,
+            snippetExpansion = snippetExpansion,
+        )
     }
-
-    private fun applySnippets(source: String, snippets: List<Snippet>): String =
-        snippets
-            .asSequence()
-            .filter { it.enabled && it.trigger.isNotBlank() && it.expansion.isNotBlank() }
-            .sortedByDescending { it.trigger.length }
-            .fold(source) { text, snippet ->
-                exactPhrase(snippet.trigger).replace(text) { snippet.expansion }
-            }
 
     private fun applyDictionary(source: String, dictionary: List<DictionaryEntry>): String =
         dictionary
@@ -96,7 +106,12 @@ internal object DeterministicTextRefiner {
                 if (character == '\n') capitalizeNext = true
             }
         }
-        if (capitalized.lastOrNull() in TERMINAL_PUNCTUATION) return capitalized
+        if (
+            capitalized.lastOrNull() in TERMINAL_PUNCTUATION ||
+            capitalized.endsWithProtectedSnippetToken()
+        ) {
+            return capitalized
+        }
         val firstWord = capitalized.substringBefore(' ').lowercase(Locale.ROOT)
         val ending = if (firstWord in QUESTION_STARTERS) "?" else "."
         return capitalized + ending
@@ -134,4 +149,21 @@ internal object DeterministicTextRefiner {
         "am", "are", "can", "could", "did", "do", "does", "how", "is", "may", "should",
         "was", "were", "what", "when", "where", "which", "who", "why", "will", "would",
     )
+}
+
+internal class PreparedDeterministicText(
+    val cleanupInput: String,
+    val safeText: String,
+    private val snippetExpansion: ProtectedSnippetExpansion,
+) {
+    val expandedSnippetCount: Int = snippetExpansion.expansionCount
+
+    fun restoreCleanup(candidate: String): String? = snippetExpansion.restore(candidate)
+
+    companion object {
+        fun empty(): PreparedDeterministicText {
+            val expansion = ProtectedSnippetExpansion.protect("", emptyList())
+            return PreparedDeterministicText("", "", expansion)
+        }
+    }
 }

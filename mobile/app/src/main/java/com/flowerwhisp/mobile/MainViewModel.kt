@@ -16,6 +16,7 @@ import com.flowerwhisp.mobile.domain.model.IdleBehavior
 import com.flowerwhisp.mobile.domain.model.LanguageMode
 import com.flowerwhisp.mobile.domain.model.RetentionMode
 import com.flowerwhisp.mobile.domain.model.Snippet
+import com.flowerwhisp.mobile.domain.model.SnippetRules
 import com.flowerwhisp.mobile.domain.model.StyleContext
 import com.flowerwhisp.mobile.domain.model.TransformProfile
 import com.flowerwhisp.mobile.domain.model.WritingStyle
@@ -338,7 +339,13 @@ class MainViewModel(
     fun upsertDictionary(entry: DictionaryEntry) = launchAction { container.dictionaryRepository.upsert(entry) }
     fun deleteDictionary(id: Long) = launchAction { container.dictionaryRepository.delete(id) }
     fun setDictionaryEnabled(entry: DictionaryEntry, enabled: Boolean) = upsertDictionary(entry.copy(enabled = enabled))
-    fun upsertSnippet(snippet: Snippet) = launchAction { container.snippetRepository.upsert(snippet) }
+    fun upsertSnippet(snippet: Snippet) = launchAction {
+        val normalized = SnippetRules.normalize(snippet)
+        val existing = container.snippetRepository.observeAll().first()
+        SnippetRules.validationError(normalized, existing)?.let(::error)
+        container.snippetRepository.upsert(normalized)
+        updateUi { copy(serviceMessage = "Snippet saved") }
+    }
     fun deleteSnippet(id: Long) = launchAction { container.snippetRepository.delete(id) }
     fun setSnippetEnabled(snippet: Snippet, enabled: Boolean) = upsertSnippet(snippet.copy(enabled = enabled))
     fun upsertTransform(transform: TransformProfile) = launchAction { container.transformRepository.upsert(transform) }

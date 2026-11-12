@@ -5,6 +5,7 @@ import type {
   PromptTransformInput,
 } from '../shared/promptTypes'
 import { DEFAULT_CLEANUP_PROMPTS } from '../shared/promptDefaults'
+import { SPOKEN_PROMPT_SYSTEM } from './spokenPrompt'
 
 export { DEFAULT_CLEANUP_PROMPTS } from '../shared/promptDefaults'
 
@@ -26,6 +27,7 @@ const CORE_GUARDRAILS = [
   'Preserve proper nouns, product names, people, places, URLs, code identifiers, and domain terminology unless an explicit deterministic replacement says otherwise.',
   'Honor every deterministic dictionary replacement exactly. Do not reverse it, approximate it, or replace it with a synonym.',
   'Preserve deliberate formatting, Markdown, code, placeholders, URLs, and line breaks unless the selected cleanup or transform explicitly requires a formatting change.',
+  'Preserve every token beginning with [[FLOWERWHISP_SNIPPET exactly, character for character, in its original position and order. Never remove, duplicate, rename, punctuate, or interpret these protected snippet tokens.',
   'Never censor profanity, soften criticism, make claims more confident, or add politeness, greetings, sign-offs, headings, or action items unless the configured operation explicitly requests it.',
   'Never return meta-commentary, explanations, preambles, status prose, or a description of your edits.',
 ]
@@ -264,6 +266,7 @@ export function buildCleanupSystemPrompt(context: PromptContext): string {
     buildDictionaryProtectionPrompt(getDictionaryEntries(context)),
     buildJsonOutputContract(),
     buildProviderFallbackSection(),
+    SPOKEN_PROMPT_SYSTEM,
   ].join('\n\n')
 }
 
